@@ -1,0 +1,65 @@
+2001-04-20   Darren Duncan <perl@DarrenDuncan.net>
+
+	* Release 0.38.
+	
+	* This release is the first one anticipating official registrations with 
+	"The Perl 5 Module List".  The updated entry would look like this:
+
+HTML::
+::Application     adpO Framework for complex portable web apps      DUNCAND
+	
+	* This release contains the first appearance of my HTML::Application module.
+	Its code is derived from several related modules which had been constantly 
+	renamed, split, and combined since their first CPAN release in 2000-07-23.  
+	The most recent temporary names for these were "CGI::WPM::Globals", 
+	"CGI::WPM::PageMaker" and "CGI::WPM::WebUserIO".  They were previously 
+	released as parts of the following distributions:
+		- "libdwg": v1.0 r2000-07-23, v1.11 r2000-08-23
+		- "CGI-FormGenerator": v0.9 r2000-09-04, v0.9201 r2000-12-26
+		- "CGI-WebsiteGenerator": v0.3 r2000-09-04, v0.36 r2001-04-10
+		- "duncand-prerelease": v0.37 r2001-04-12
+	
+	* This module requires Perl version 5.004.
+	
+	* It also requires File::VirtualPath 1.0, HTML::EasyTags 1.04, 
+	Data::MultiValuedhash 1.07, and CGI::MultiValuedHash 1.07.  I consider the 
+	first three modules to be stable and well tested, as well as unlikely to 
+	change.  The fourth module is partially tested, but production use of the 
+	other functionality finds it to be working properly.
+	
+	* This release comes with the CPAN standard files "Makefile.PL", "test.pl", 
+	and "MANIFEST", which were all created since the previous release.
+
+	* Note that "test.pl" is incomplete; it only tests that this module will 
+	compile but not that the methods work; it is included so that people can use 
+	the Makefile in the standard way during installation.  This file will be 
+	fleshed out when I have the chance.
+	
+2001-04-12   Darren Duncan <perl@DarrenDuncan.net>
+
+	* duncand-prerelease 0.37, the last version of any distribution to include
+	CGI::WPM::Globals, was released.
+	
+2000-07-23   Darren Duncan <perl@DarrenDuncan.net>
+
+	* libdwg 1.0, the first version of any distribution to include
+	CGI::WPM::Globals, was released on CPAN.
+	
+2000-05-15   Darren Duncan <perl@DarrenDuncan.net>
+
+	* Completed primary development on this module.
+
+2000-03-07   Darren Duncan <perl@DarrenDuncan.net>
+
+	* Began development on the final version of this module.
+	
+	* Module based on a template created by h2xs 1.18.
+
+1999-07 thru 1999-12
+
+	* Worked on second prototype of code that ended up in this module.
+
+1999-02 thru 1999-05
+
+	* Created first prototypes of code that ended up in this module, which were 
+	used in a production environment.

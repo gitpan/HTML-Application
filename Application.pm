@@ -1,0 +1,2420 @@
+=head1 NAME
+
+HTML::Application - Framework for complex portable web apps.
+
+=cut
+
+######################################################################
+
+package HTML::Application;
+require 5.004;
+
+# Copyright (c) 1999-2001, Darren R. Duncan. All rights reserved. This module is
+# free software; you can redistribute it and/or modify it under the same terms as
+# Perl itself.  However, I do request that this copyright information remain
+# attached to the file.  If you modify this module and redistribute a changed
+# version then please attach a note listing the modifications.
+
+use strict;
+use vars qw($VERSION);
+$VERSION = '0.38';
+
+######################################################################
+
+=head1 DEPENDENCIES
+
+=head2 Perl Version
+
+	5.004
+
+=head2 Standard Modules
+
+	I<none>
+
+=head2 Nonstandard Modules
+
+	File::VirtualPath 1.0
+	HTML::EasyTags 1.04
+	Data::MultiValuedHash 1.07
+	CGI::MultiValuedHash 1.07
+
+=cut
+
+######################################################################
+
+use File::VirtualPath 1.0;
+use HTML::EasyTags 1.04;
+use Data::MultiValuedHash 1.07;
+use CGI::MultiValuedHash 1.07;
+
+######################################################################
+
+=head1 SYNOPSIS
+
+=head2 Content of thin shell "startup.pl" for UNIX file system, CGI environment:
+
+	#!/usr/bin/perl
+	use strict;
+	use lib '/home/johndoe/myperl5/lib';
+
+	# make new framework; set where our files are today
+
+	require HTML::Application;
+	my $globals = HTML::Application->new( "/home/johndoe/projects/aardvark" );
+
+	# fetch the web user's input
+
+	$globals->user_path( $ENV{'PATH_INFO'} );
+	$globals->user_query( $ENV{'QUERY_STRING'} );
+	if( $ENV{'REQUEST_METHOD'} eq 'POST' ) {
+		my $post_data;
+		read( STDIN, $post_data, $ENV{'CONTENT_LENGTH'} );
+		chomp( $post_data );
+		$globals->user_post( $post_data );
+	}
+	$globals->user_cookies( $ENV{'HTTP_COOKIE'} || $ENV{'COOKIE'} );
+
+	# remember the url for this script in call-back urls
+
+	$globals->url_base( "http://$ENV{HTTP_HOST}$ENV{SCRIPT_NAME}" );
+
+	# check if owner's here and wants to debug; replicate fact in call-back urls
+
+	if( $globals->user_query_param( 'debugging' ) eq 'on' ) {
+		$globals->is_debug( 1 );
+		$globals->url_query_param( 'debugging', 'on' );
+	}
+	
+	# set up component context including file prefs and user path level
+	
+	$globals->set_prefs( "config.pl" );
+	$globals->inc_user_path_level();
+	
+	# run our main program to do all the real work, now that its sandbox is ready
+	
+	$globals->call_component( 'Aardvark', 1 );
+	
+	# make an error message if the main program failed for some reason
+	
+	if( $globals->get_error() ) {
+		$globals->page_title( 'Fatal Program Error' );
+		$globals->set_page_body( <<__endquote );
+	<H1>@{[$globals->page_title()]}</H1>
+	<P>I'm sorry, but an error has occurred while trying to run Aardvark.  
+	The problem could be temporary.  Click @{[$globals->recall_html('here')]} 
+	to automatically try again, or come back later.
+	<P>Details: @{[$globals->get_error()]}</P>
+	__endquote
+	}
+
+	# let web user know that we know that they are debugging
+	
+	if( $globals->is_debug() ) {
+		$globals->append_page_body( <<__endquote );
+	<P>Debugging is currently turned on.</P>
+	__endquote
+	}
+
+	# send the user output
+
+	print STDOUT "Status: @{[$globals->http_status_code()]}\n";
+	print STDOUT "Content-type: @{[$globals->http_content_type()]}\n";
+	if( my $url = $globals->http_redirect_url() ) {
+		print STDOUT "Uri: $url\nLocation: $url\n";
+	}
+	print STDOUT "\n".$globals->page_as_string();
+
+	1;
+
+=head2 Content of settings file "config.pl"
+
+	my $rh_prefs = {
+		title => 'Welcome to Aardvark',
+		credits => '<P>This program copyright 2001 Darren Duncan.</P>',
+		screens => {
+			one => {
+				'link' => 'Door Number One',
+				mod_name => 'Panda',
+				mod_prefs => {
+					food => 'plants',
+					color => 'black and white',
+					size => 'medium',
+					files => [qw( priv prot publ )],
+					file_reader => '/three',
+				},
+			}, 
+			two => {
+				'link' => 'Door Number Two',
+				mod_name => 'Owl',
+				mod_prefs => {
+					fly_to => 'http://www.owl.org',
+				},
+			}, 
+			three => {
+				'link' => 'Door Number Three',
+				mod_name => 'Camel',
+				mod_subdir => 'files',
+				mod_prefs => {
+					priv => 'private.txt',
+					prot => 'protected.txt',
+					publ => 'public.txt',
+				},
+			},
+		},
+	};
+
+=head2 Content of fat main program component "Aardvark.pm"
+
+	package Aardvark;
+	use strict;
+	use HTML::Application;
+	
+	sub main {
+		my ($self, $globals) = @_;
+		$globals->page_title( $globals->pref( 'title' ) );
+		my $users_choice = $globals->current_user_path_element();
+		my $rh_screens = $globals->pref( 'screens' );
+		
+		if( my $rh_screen = $rh_screens->{$users_choice} ) {
+			$globals->navigate_file_path( $rh_screen->{mod_subdir} );
+			$globals->set_prefs( $rh_screen->{mod_prefs} );
+			$globals->inc_user_path_level();
+			my $inner = $globals->make_new_context();
+			$inner->call_component( $rh_screen->{mod_name}, 1 );
+			if( $inner->get_error() ) {
+				$globals->append_page_body( 
+					"Can't show requested screen: ".$inner->get_error() );
+			} else {
+				$globals->append_page_body( $inner->get_page_body() );
+			}
+		
+		} else {
+			$globals->set_page_body( "<P>Please choose a screen to view.</P>" );
+			foreach my $key (keys %{$rh_screens}) {
+				my $label = $rh_screens->{$key}->{link};
+				my $url = $globals->url_as_string( $key );
+				$globals->append_page_body( "<BR><A HREF=\"$url\">$label</A>" );
+			}
+		}
+		
+		$globals->append_page_body( $globals->pref( 'credits' ) );
+	}
+	
+	1;
+
+=head2 Content of component module "Panda.pm"
+
+	package Panda;
+	use strict;
+	use HTML::Application;
+	
+	sub main {
+		my ($self, $globals) = @_;
+		$globals->set_page_body( <<__endquote );
+	<P>Food: @{[$globals->pref( 'food' )]}
+	<BR>Color: @{[$globals->pref( 'color' )]}
+	<BR>Size: @{[$globals->pref( 'size' )]}</P>
+	<P>Now let's look at some files; take your pick:
+	__endquote
+		$globals->navigate_url_path( $globals->pref( 'file_reader' ) );
+		foreach my $frag (@{$globals->pref( 'files' )}) {
+			my $url = $globals->url_as_string( $frag );
+			$globals->append_page_body( "<BR><A HREF=\"$url\">$frag</A>" );
+		}
+		$globals->append_page_body( "</P>" );
+	}
+	
+	1;
+
+=head2 Content of component module "Owl.pm"
+
+	package Owl;
+	use strict;
+	use HTML::Application;
+	
+	sub main {
+		my ($self, $globals) = @_;
+		my $url = $globals->pref( 'fly_to' );
+		$globals->http_status_code( '301 Moved' );
+		$globals->http_redirect_url( $url );
+	}
+	
+	1;
+
+=head2 Content of component module "Camel.pm"
+
+	package Camel;
+	use strict;
+	use HTML::Application;
+	
+	sub main {
+		my ($self, $globals) = @_;
+		my $users_choice = $globals->current_user_path_element();
+		my $filename = $globals->pref( $users_choice );
+		my $filepath = $globals->physical_filename( $filename );
+		SWITCH: {
+			open( FH, $filepath ) or do {
+				$globals->add_virtual_filename_error( 'open', $filename );
+				last SWITCH;
+			};
+			local $/ = undef;
+			defined( my $file_content = <FH> ) or do {
+				$globals->add_virtual_filename_error( "read from", $filename );
+				last SWITCH;
+			};
+			close( FH ) or do {
+				$globals->add_virtual_filename_error( "close", $filename );
+				last SWITCH;
+			};
+			$globals->set_page_body( $file_content );
+		}
+		if( $globals->get_error() ) {
+			$globals->append_page_body( 
+				"Can't show requested screen: ".$globals->get_error() );
+		}
+	}
+
+	1;
+
+=head1 DESCRIPTION
+
+This Perl 5 object class is a framework intended to support complex web
+applications that are easily portable across servers because common
+environment-specific details are abstracted away, including the file system type, 
+the web server type, and your project's location in the file system or uri 
+hierarchy.  In addition, this class can make it easier for your applications to 
+be broken down into reusable data-controlled components, each of which would act
+like it was its own application, which receives user input and instance
+configuration data some how, and returns an HTML page or other HTTP response.
+
+=head1 OVERVIEW
+
+This class is designed primarily as a data structure that intermediates between 
+your large central program logic and the small shell part of your code that knows 
+anything specific about your environment.  The way that this works is that the 
+shell code instantiates an HTML::Application object and stores any valid user 
+input in it, gathered from the appropriate places in the current environment.  
+Then the central program is started and given the HTML::Application object, from 
+which it takes stored user input and performs whatever tasks it needs to.  The 
+central program stores its user output in the same HTML::Application object and 
+then quits.  Finally, the shell code takes the stored user output from the 
+HTML::Application object and does whatever is necessary to send it to the user.  
+Similarly, your thin shell code knows where to get the instance-specific file 
+system and stored program settings data, which it gives to the HTML::Application 
+object along with the user input.
+
+Here is a diagram:
+
+	            YOUR THIN             HTML::Application        YOUR FAT "CORE" 
+	USER <----> "MAIN" CONFIG, <----> INTERFACE LAYER   <----> PROGRAM LOGIC
+	            I/O SHELL             FRAMEWORK                FUNCTIONALITY
+	            (may be portable)     (portable)               (portable)
+
+This class does not gather any user input or send any user input by itself, but
+expects your thin program instance shell to do that.  The rationale is both for
+keeping this class simpler and for keeping it compatible with all types of web
+servers instead of just the ones it knows about.  So it works equally well with
+CGI under any server or mod_perl or when your Perl is its own web server or when
+you are debugging on the command line.
+
+Because your program core uses this class to communicate with its "superior", it 
+can be written the same way regardless of what platform it is running on.  The 
+interface that it needs to written to is consistent across platforms.  An 
+analogy to this is that the core always plays in the same sandbox and that 
+environment is all it knows; you can move the sandbox anywhere you want and its 
+occupant doesn't have to be any the wiser to how the outside world had changed.  
+
+From there, it is a small step to breaking your program core into reusable 
+components and using HTML::Application as an interface between them.  Each 
+component exists in its own sandbox and acts like it is its own core program, 
+with its own task to produce an html page or other http response, and with its 
+own set of user input and program settings to tell it how to do its job.  
+Depending on your needs, each "component" instance could very well be its own 
+complete application, or it would in fact be a subcontractee of another one.  
+In the latter case, the "subcontractor" component may have other components do 
+a part of its own task, and then assemble a derivative work as its own output.  
+
+When one component wants another to do work for it, the first one instantiates 
+a new HTML::Application object which it can pass on any user input or settings 
+data that it wishes, and then provides this to the second component; the second 
+one never has to know where its HTML::Application object it has came from, but 
+that everything it needs to know for its work is right there.  This class 
+provides convenience methods like make_new_context() to simplify this task by 
+making a partial clone that replicates input but not output data.
+
+Due to the way HTML::Application stores program settings and other input/output 
+data, it lends itself well to supporting data-driven applications.  That is, 
+your application components can be greatly customizable as to their function by 
+simply providing instances of them with different setup data.  If any component 
+is so designed, its own config instructions can detail which other components it 
+subcontracts, as well as what operating contexts it sets up for them.  This 
+results in a large variety of functionality from just a small set of components.  
+
+Another function that HTML::Application provides for component management is that 
+there is limited protection for components that are not properly designed to be 
+kept from harming other ones.  You see, any components designed a certain way can 
+be invoked by HTML::Application itself at the request of another component.  
+This internal call is wrapped in an eval block such that if a component fails to 
+compile or has a run-time exception, this class will log an error to the effect 
+and the component that called it continues to run.  Also, called components get 
+a different HTML::Application object than the parent, so that if they mess around 
+with the stored input/output then the parent component's own data isn't lost.  
+It is the parent's own choice as to which output of its child that it decides to 
+copy back into its own output, with or without further processing.
+
+Note that the term "components" above suggests that each one is structured as 
+a Perl 5 module and is called like one; the module should have a method called 
+main() that takes an HTML::Application object as its argument and has the 
+dispatch code for that component.  Of course, it is up to you.
+
+=cut
+
+######################################################################
+
+# Names of properties for objects of this class are declared here:
+my $KEY_IS_DEBUG = 'is_debug';  # boolean - a flag to say we are debugging
+my $KEY_ERRORS = 'errors';  # array - a list of short error messages
+my $KEY_FILE_PATH = 'file_path';  # FVP - tracks filesystem loc of our files
+my $KEY_PREFS = 'prefs';  # hash - tracks our current file-based preferences
+
+# These properties are set from the user input
+my $KEY_UI_PATH = 'ui_path';  # FVP - stores virtual url path user requested
+my $KEY_UI_QUER = 'ui_quer';  # CMVH - stores parsed user input query
+my $KEY_UI_POST = 'ui_post';  # CMVH - stores parsed user input post
+my $KEY_UI_COOK = 'ui_cook';  # CMVH - stores parsed user input cookies
+
+# These properties are used when making new self-referencing urls in output
+my $KEY_URL_BASE = 'url_base';  # string - stores joined host, script_name, etc
+my $KEY_URL_PATH = 'url_path';  # FVP - virtual path used in s-r urls
+my $KEY_URL_QUER = 'url_quer';  # DMVH - holds query params to put in all urls
+my $KEY_URL_PIPI = 'url_pipi';  # boolean - true if path goes in PATH_INFO
+my $KEY_URL_PIQU = 'url_piqu';  # boolean - true if path goes in a query param
+my $KEY_URL_PQPN = 'url_pqpn';  # string - if path in query; this is param name
+
+# These properties will be combined into the output page if it is text/html
+my $KEY_PAGE_TITL = 'page_titl';  # string - new HTML title
+my $KEY_PAGE_AUTH = 'page_auth';  # string - new HTML author
+my $KEY_PAGE_META = 'page_meta';  # hash - new HTML meta keys/values
+my $KEY_PAGE_CSSR = 'page_cssr';  # array - new HTML css file urls
+my $KEY_PAGE_CSSC = 'page_cssc';  # array - new HTML css embedded code
+my $KEY_PAGE_HEAD = 'page_head';  # array - raw misc content for HTML head
+my $KEY_PAGE_BATR = 'page_batr';  # hash - attribs for HTML body tag
+my $KEY_PAGE_BODY = 'page_body';  # array - raw content for HTML body
+
+# These properties would go in output HTTP headers and body
+my $KEY_HTTP_STAT = 'http_stat';  # string - HTTP status code; first to output
+my $KEY_HTTP_COTY = 'http_coty';  # string - stores Content-type of outp
+my $KEY_HTTP_REDI = 'http_redi';  # string - stores URL to redirect to
+my $KEY_HTTP_COOK = 'http_cook';  # array of DMVH - stores outgoing cookies
+my $KEY_HTTP_HEAD = 'http_head';  # hash - stores misc HTTP headers keys/values
+my $KEY_HTTP_BODY = 'http_body';  # string - stores raw HTTP body if wanted
+my $KEY_HTTP_BINA = 'http_bina';  # boolean - true if HTTP body is binary
+
+# This property is generally static across all derived objects for misc sharing
+my $KEY_MISC_OBJECTS = 'misc_objects';  # hash - holds misc objects we may need
+
+######################################################################
+
+=head1 SYNTAX
+
+This class does not export any functions or methods, so you need to call them
+using object notation.  This means using B<Class-E<gt>function()> for functions
+and B<$object-E<gt>method()> for methods.  If you are inheriting this class for
+your own modules, then that often means something like B<$self-E<gt>method()>. 
+
+=head1 CONSTRUCTOR FUNCTIONS AND METHODS
+
+These functions and methods are involved in making new HTML::Application objects.
+
+=head2 new([ FILE_ROOT[, FILE_DELIM[, PREFS]] ])
+
+This function creates a new HTML::Application (or subclass) object and
+returns it.  All of the method arguments are passed to initialize() as is; please
+see the POD for that method for an explanation of them.
+
+=cut
+
+######################################################################
+
+sub new {
+	my $class = shift( @_ );
+	my $self = bless( {}, ref($class) || $class );
+	$self->initialize( @_ );
+	return( $self );
+}
+
+######################################################################
+
+=head2 initialize([ FILE_ROOT[, FILE_DELIM[, PREFS]] ])
+
+This method is used by B<new()> to set the initial properties of objects that it
+creates.  The optional 3 arguments are used in turn to set the properties 
+accessed by these methods: file_path_root(), file_path_delimiter(), set_prefs().
+
+=cut
+
+######################################################################
+
+sub initialize {
+	my ($self, $file_root, $file_delim, $prefs) = @_;
+
+	$self->{$KEY_IS_DEBUG} = undef;
+	$self->{$KEY_ERRORS} = [];
+	$self->{$KEY_FILE_PATH} = File::VirtualPath->new();
+	$self->{$KEY_PREFS} = {};
+
+	$self->{$KEY_UI_PATH} = File::VirtualPath->new();
+	$self->{$KEY_UI_QUER} = CGI::MultiValuedHash->new();
+	$self->{$KEY_UI_POST} = CGI::MultiValuedHash->new();
+	$self->{$KEY_UI_COOK} = CGI::MultiValuedHash->new();
+
+	$self->{$KEY_URL_BASE} = 'http://localhost/';
+	$self->{$KEY_URL_PATH} = File::VirtualPath->new();
+	$self->{$KEY_URL_QUER} = CGI::MultiValuedHash->new();
+	$self->{$KEY_URL_PIPI} = 1;
+	$self->{$KEY_URL_PIQU} = undef;
+	$self->{$KEY_URL_PQPN} = 'path';
+
+	$self->{$KEY_PAGE_TITL} = undef;
+	$self->{$KEY_PAGE_AUTH} = undef;
+	$self->{$KEY_PAGE_META} = {};
+	$self->{$KEY_PAGE_CSSR} = [];
+	$self->{$KEY_PAGE_CSSC} = [];
+	$self->{$KEY_PAGE_HEAD} = [];
+	$self->{$KEY_PAGE_BATR} = {};
+	$self->{$KEY_PAGE_BODY} = [];
+
+	$self->{$KEY_HTTP_STAT} = '200 OK';
+	$self->{$KEY_HTTP_COTY} = 'text/html';
+	$self->{$KEY_HTTP_REDI} = undef;
+	$self->{$KEY_HTTP_COOK} = [];
+	$self->{$KEY_HTTP_HEAD} = {};
+	$self->{$KEY_HTTP_BODY} = undef;
+	$self->{$KEY_HTTP_BINA} = undef;
+	
+	$self->{$KEY_MISC_OBJECTS} = {};
+
+	$self->file_path_root( $file_root );
+	$self->file_path_delimiter( $file_delim );
+	$self->set_prefs( $prefs );
+}
+
+######################################################################
+
+=head2 clone([ CLONE ])
+
+This method initializes a new object to have all of the same properties of the
+current object and returns it.  This new object can be provided in the optional
+argument CLONE (if CLONE is an object of the same class as the current object);
+otherwise, a brand new object of the current class is used.  Only object
+properties recognized by HTML::Application are set in the clone; other
+properties are not changed.
+
+=cut
+
+######################################################################
+
+sub clone {
+	my ($self, $clone) = @_;
+	ref($clone) eq ref($self) or $clone = bless( {}, ref($self) );
+
+	$clone->{$KEY_IS_DEBUG} = $self->{$KEY_IS_DEBUG};
+	$clone->{$KEY_ERRORS} = [@{$self->{$KEY_ERRORS}}];
+	$clone->{$KEY_FILE_PATH} = $self->{$KEY_FILE_PATH}->clone();
+	$clone->{$KEY_PREFS} = {%{$self->{$KEY_PREFS}}};
+
+	$clone->{$KEY_UI_PATH} = $self->{$KEY_UI_PATH}->clone();
+	$clone->{$KEY_UI_QUER} = $self->{$KEY_UI_QUER}->clone();
+	$clone->{$KEY_UI_POST} = $self->{$KEY_UI_POST}->clone();
+	$clone->{$KEY_UI_COOK} = $self->{$KEY_UI_COOK}->clone();
+
+	$clone->{$KEY_URL_BASE} = $self->{$KEY_URL_BASE};
+	$clone->{$KEY_URL_PATH} = $self->{$KEY_URL_PATH}->clone();
+	$clone->{$KEY_URL_QUER} = $self->{$KEY_URL_QUER}->clone();
+	$clone->{$KEY_URL_PIPI} = $self->{$KEY_URL_PIPI};
+	$clone->{$KEY_URL_PIQU} = $self->{$KEY_URL_PIQU};
+	$clone->{$KEY_URL_PQPN} = $self->{$KEY_URL_PQPN};
+
+	$clone->{$KEY_PAGE_TITL} = $self->{$KEY_PAGE_TITL};
+	$clone->{$KEY_PAGE_AUTH} = $self->{$KEY_PAGE_AUTH};
+	$clone->{$KEY_PAGE_META} = {%{$self->{$KEY_PAGE_META}}};
+	$clone->{$KEY_PAGE_CSSR} = [@{$self->{$KEY_PAGE_CSSR}}];
+	$clone->{$KEY_PAGE_CSSC} = [@{$self->{$KEY_PAGE_CSSC}}];
+	$clone->{$KEY_PAGE_HEAD} = [@{$self->{$KEY_PAGE_HEAD}}];
+	$clone->{$KEY_PAGE_BATR} = {%{$self->{$KEY_PAGE_BATR}}};
+	$clone->{$KEY_PAGE_BODY} = [@{$self->{$KEY_PAGE_BODY}}];
+
+	$clone->{$KEY_HTTP_STAT} = $self->{$KEY_HTTP_STAT};
+	$clone->{$KEY_HTTP_COTY} = $self->{$KEY_HTTP_COTY};
+	$clone->{$KEY_HTTP_REDI} = $self->{$KEY_HTTP_REDI};
+	$clone->{$KEY_HTTP_COOK} = [map { $_->clone() } @{$self->{$KEY_HTTP_COOK}}];
+	$clone->{$KEY_HTTP_HEAD} = {%{$self->{$KEY_HTTP_HEAD}}};
+	$clone->{$KEY_HTTP_BODY} = $self->{$KEY_HTTP_BODY};
+	$clone->{$KEY_HTTP_BINA} = $self->{$KEY_HTTP_BINA};
+
+	$clone->{$KEY_MISC_OBJECTS} = $self->{$KEY_MISC_OBJECTS};  # copy hash ref
+
+	return( $clone );
+}
+
+######################################################################
+
+=head1 METHODS FOR DEBUGGING
+
+=head2 is_debug([ VALUE ])
+
+This method is an accessor for the "is debug" boolean property of this object,
+which it returns.  If VALUE is defined, this property is set to it.  If this
+property is true then it indicates that the program is currently being debugged
+by the owner/maintainer; if it is false then the program is being run by a normal
+user.  How or whether the program reacts to this fact is quite arbitrary.  
+For example, it may just keep a separate set of usage logs or append "debug" 
+messages to email or web pages it makes.
+
+=cut
+
+######################################################################
+
+sub is_debug {
+	my $self = shift( @_ );
+	if( defined( my $new_value = shift( @_ ) ) ) {
+		$self->{$KEY_IS_DEBUG} = $new_value;
+	}
+	return( $self->{$KEY_IS_DEBUG} );
+}
+
+######################################################################
+
+=head1 METHODS FOR ERROR MESSAGES
+
+These methods are accessors for the "error list" property of this object, 
+which is designed to accumulate any error strings that should be printed to the 
+program's error log or shown to the user before the program exits.  What 
+constitutes an error condition is up to you, but the suggested use is for things 
+that are not the web user's fault, such as problems compiling or calling program 
+modules, or problems using file system files for settings or data.  The errors 
+list is not intended to log invalid user input, which would be common activity.
+Since some errors are non-fatal and other parts of your program would still 
+work, it is possible for several errors to happen in parallel; hence a list.  
+At program start-up this list starts out empty.
+
+An extension to this feature is the concept of "no error" messages (undefined 
+strings) which if used indicate that the last operation *did* work.  This gives 
+you the flexability to always record the result of an operation for acting on 
+later.  If you use get_error() in a boolean context then it would be true if the 
+last noted operation had an error and false if it didn't.  You can also issue an 
+add_no_error() to mask errors that have been dealt with so they don't continue 
+to look unresolved.
+
+=head2 get_errors()
+
+This method returns a list of the stored error messages with any undefined 
+strings (no error) filtered out.
+
+=head2 get_error([ INDEX ])
+
+This method returns a single error message.  If the numerical argument INDEX is 
+defined then the message is taken from that element in the error list.  
+INDEX defaults to -1 if not defined, so the most recent message is returned.
+
+=head2 add_error( MESSAGE )
+
+This method appends the scalar argument MESSAGE to the error list.
+
+=head2 add_no_error()
+
+This message appends an undefined value to the error list, a "no error" message.
+
+=head2 add_virtual_filename_error( UNIQUE_PART, FILENAME )
+
+This message constructs a new error message using its arguments and appends it to
+the error list.  You can call this after doing a file operation that failed where
+UNIQUE_PART is a sentence fragment like "open" or "read from" and FILENAME is the
+relative portion of the file name.  The new message looks like 
+"can't [UNIQUE_PART] file '[FILEPATH]': $!" where FILEPATH is defined as the 
+return value of "virtual_filename( FILENAME )".
+
+=head2 add_physical_filename_error( UNIQUE_PART, FILENAME )
+
+This message constructs a new error message using its arguments and appends it to
+the error list.  You can call this after doing a file operation that failed where
+UNIQUE_PART is a sentence fragment like "open" or "read from" and FILENAME is the
+relative portion of the file name.  The new message looks like 
+"can't [UNIQUE_PART] file '[FILEPATH]': $!" where FILEPATH is defined as the 
+return value of "physical_filename( FILENAME )".
+
+=cut
+
+######################################################################
+
+sub get_errors {
+	return( grep { defined($_) } @{$_[0]->{$KEY_ERRORS}} );
+}
+
+sub get_error {
+	my ($self, $index) = @_;
+	defined( $index ) or $index = -1;
+	return( $self->{$KEY_ERRORS}->[$index] );
+}
+
+sub add_error {
+	my ($self, $message) = @_;
+	push( @{$self->{$KEY_ERRORS}}, $message );
+}
+
+sub add_no_error {
+	push( @{$_[0]->{$KEY_ERRORS}}, undef );
+}
+
+sub add_virtual_filename_error {
+	my ($self, $unique_part, $filename) = @_;
+	my $filepath = $self->virtual_filename( $filename );
+	$self->add_error( "can't $unique_part file '$filepath': $!" );
+}
+
+sub add_physical_filename_error {
+	my ($self, $unique_part, $filename) = @_;
+	my $filepath = $self->physical_filename( $filename );
+	$self->add_error( "can't $unique_part file '$filepath': $!" );
+}
+
+######################################################################
+
+=head1 METHODS FOR THE VIRTUAL FILE SYSTEM
+
+These methods are accessors for the "file path" property of this object, which is
+designed to facilitate easy portability of your application across multiple file
+systems or across different locations in the same file system.  It maintains a
+"virtual file system" that you can use, within which your program core owns the
+root directory.
+
+Your program core would take this virtual space and organize it how it sees fit
+for configuration and data files, including any use of subdirectories that is
+desired.  This class will take care of mapping the virtual space onto the real
+one, in which your virtual root is actually a subdirectory and your path
+separators may or may not be UNIXy ones.
+
+If this class is faithfully used to translate your file system operations, then
+you will stay safely within your project root directory at all times.  Your core
+app will never have to know if the project is moved around since details of the
+actual file paths, including level delimiters, has been abstracted away.  It will
+still be able to find its files.  Only your program's thin instance startup shell
+needs to know the truth.
+
+The file path property is a File::VirtualPath object so please see the POD for 
+that class to learn about its features.
+
+=head2 get_file_path_ref()
+
+This method returns a reference to the file path object which you can then 
+manipulate directly with File::VirtualPath methods.
+
+=head2 file_path_root([ VALUE ])
+
+This method is an accessor for the "physical root" string property of the file 
+path, which it returns.  If VALUE is defined then this property is set to it.
+This property says where your project directory is actually located in the 
+current physical file system, and is used in translations from the virtual to 
+the physical space.  The only part of your program that should set this method 
+is your thin startup shell; the rest should be oblivious to it.
+
+=head2 file_path_delimiter([ VALUE ])
+
+This method is an accessor for the "physical delimiter" string property of the 
+file path, which it returns.  If VALUE is defined then this property is set to 
+it.  This property says what character is used to delimit directory path levels 
+in your current physical file system, and is used in translations from the 
+virtual to the physical space.  The only part of your program that should set 
+this method is your thin startup shell; the rest should be oblivious to it.
+
+=head2 file_path([ VALUE ])
+
+This method is an accessor to the "virtual path" array property of the file path, 
+which it returns.  If VALUE is defined then this property is set to it; it can 
+be an array of path levels or a string representation in the virtual space.
+This method returns an array ref having the current virtual file path.
+
+=head2 file_path_string([ TRAILER ])
+
+This method returns a string representation of the file path in the virtual 
+space.  If the optional argument TRAILER is true, then a virtual file path 
+delimiter, "/" by default, is appended to the end of the returned value.
+
+=head2 navigate_file_path( CHANGE_VECTOR )
+
+This method updates the "virtual path" property of the file path by taking the 
+current one and applying CHANGE_VECTOR to it using the FVP's chdir() method.  
+This method returns an array ref having the changed virtual file path.
+
+=head2 virtual_filename( CHANGE_VECTOR[, WANT_TRAILER] )
+
+This method uses CHANGE_VECTOR to derive a new path in the virtual file-system 
+relative to the current one and returns it as a string.  If WANT_TRAILER is true 
+then the string has a path delimiter appended; otherwise, there is none.
+
+=head2 physical_filename( CHANGE_VECTOR[, WANT_TRAILER] )
+
+This method uses CHANGE_VECTOR to derive a new path in the real file-system 
+relative to the current one and returns it as a string.  If WANT_TRAILER is true 
+then the string has a path delimiter appended; otherwise, there is none.
+
+=cut
+
+######################################################################
+
+sub get_file_path_ref {
+	return( $_[0]->{$KEY_FILE_PATH} );  # returns ref for further use
+}
+
+sub file_path_root {
+	my ($self, $new_value) = @_;
+	return( $self->{$KEY_FILE_PATH}->physical_root( $new_value ) );
+}
+
+sub file_path_delimiter {
+	my ($self, $new_value) = @_;
+	return( $self->{$KEY_FILE_PATH}->physical_delimiter( $new_value ) );
+}
+
+sub file_path {
+	my ($self, $new_value) = @_;
+	return( $self->{$KEY_FILE_PATH}->path( $new_value ) );
+}
+
+sub file_path_string {
+	my ($self, $trailer) = @_;
+	return( $self->{$KEY_FILE_PATH}->path_string( $trailer ) );
+}
+
+sub navigate_file_path {
+	my ($self, $chg_vec) = @_;
+	return( $self->{$KEY_FILE_PATH}->chdir( $chg_vec ) );
+}
+
+sub virtual_filename {
+	my ($self, $chg_vec, $trailer) = @_;
+	return( $self->{$KEY_FILE_PATH}->child_path_string( $chg_vec, $trailer ) );
+}
+
+sub physical_filename {
+	my ($self, $chg_vec, $trailer) = @_;
+	return( $self->{$KEY_FILE_PATH}->physical_child_path_string( 
+		$chg_vec, $trailer ) );
+}
+
+######################################################################
+
+=head1 METHODS FOR INSTANCE PREFERENCES
+
+These methods are accessors for the "preferences" property of this object, which 
+is designed to facilitate easy access to your application instance settings.
+The "preferences" is a hierarchical data structure which has a hash as its root 
+and can be arbitrarily complex from that point on.  A hash is used so that any 
+settings can be accessed by name; the hierarchical nature comes from any 
+setting values that are references to non-scalar values, or resolve to such.
+
+HTML::Application makes it easy for your preferences structure to scale across 
+any number of storage files, helping with memory and speed efficiency.  At 
+certain points in your program flow, branches of the preferences will be followed 
+until a node is reached that your program wants to be a hash.  At that point, 
+this node can be given back to this class and resolved into a hash one way or 
+another.  If it already is a hash ref then it is given back as is; otherwise it 
+is taken as a filename for a Perl file which when evaluated with "do" returns 
+a hash ref.  This filename would be a relative path in the virtual file system 
+and this class would resolve it properly.
+
+Since the fact of hash-ref-vs-filename is abstracted from your program, this 
+makes it easy for your data itself to determine how the structure is segmented.  
+The decision-making begins with the root preferences node that your thin config 
+shell gives to HTML::Application at program start-up.  What is resolved from 
+that determines how any child nodes are gotten, and they determine their 
+children.  Since this class handles such details, it is much easier to make your 
+program data-controlled rather than code-controlled.  For instance, your startup 
+shell may contain the entire preferences structure itself, meaning that you only 
+need a single file to define a project instance.  Or, your startup shell may 
+just have a filename for where the preferences really are, making it minimalist.  
+Depending how your preferences are segmented, only the needed parts actually get 
+loaded, so we save resources.
+
+=head2 resolve_prefs_node_to_hash( RAW_NODE )
+
+This method takes a raw preferences node, RAW_NODE, and resolves it into a hash 
+ref, which it returns.  If RAW_NODE is a hash ref then this method performs a 
+single-level copy of it and returns a new hash ref.  Otherwise, this method 
+takes the argument as a filename and tries to execute it.  If the file fails to 
+execute for some reason or it doesn't return a hash ref, then this method adds 
+a file error message and returns an empty hash ref.  The file is executed with 
+"do [FILEPATH]" where FILEPATH is defined as the return value of 
+"physical_filename( FILENAME )".  The error message uses a virtual path.
+
+=head2 resolve_prefs_node_to_array( RAW_NODE )
+
+This method takes a raw preferences node, RAW_NODE, and resolves it into an array 
+ref, which it returns.  If RAW_NODE is a hash ref then this method performs a 
+single-level copy of it and returns a new array ref.  Otherwise, this method 
+takes the argument as a filename and tries to execute it.  If the file fails to 
+execute for some reason or it doesn't return an array ref, then this method adds 
+a file error message and returns an empty array ref.  The file is executed with 
+"do [FILEPATH]" where FILEPATH is defined as the return value of 
+"physical_filename( FILENAME )".  The error message uses a virtual path.
+
+=head2 get_prefs_ref()
+
+This method returns a reference to the internally stored "preferences" hash.
+
+=head2 set_prefs( VALUE )
+
+This method sets this object's preferences property with the return value of 
+"resolve_prefs_node_to_hash( VALUE )", even if VALUE is not defined.
+
+=head2 pref( KEY[, VALUE] )
+
+This method is an accessor to individual settings in this object's preferences 
+property, and returns the setting value whose name is defined in the scalar 
+argument KEY.  If the optional scalar argument VALUE is defined then it becomes 
+the value for this setting.  All values are set or fetched with a scalar copy.
+
+=cut
+
+######################################################################
+
+sub resolve_prefs_node_to_hash {
+	my ($self, $raw_node) = @_;
+	if( ref( $raw_node ) eq 'HASH' ) {
+		return( {%{$raw_node}} );
+	} else {
+		$self->add_no_error();
+		my $filepath = $self->physical_filename( $raw_node );
+		my $result = do $filepath;
+		if( ref( $result ) eq 'HASH' ) {
+			return( $result );
+		} else {
+			$self->add_virtual_filename_error( 
+				'obtain required preferences hash from', $raw_node );
+			return( {} );
+		}
+	}
+}
+
+sub resolve_prefs_node_to_array {
+	my ($self, $raw_node) = @_;
+	if( ref( $raw_node ) eq 'ARRAY' ) {
+		return( [@{$raw_node}] );
+	} else {
+		$self->add_no_error();
+		my $filepath = $self->physical_filename( $raw_node );
+		my $result = do $filepath;
+		if( ref( $result ) eq 'ARRAY' ) {
+			return( $result );
+		} else {
+			$self->add_virtual_filename_error( 
+				'obtain required preferences array from', $raw_node );
+			return( [] );
+		}
+	}
+}
+
+sub get_prefs_ref {
+	return( $_[0]->{$KEY_PREFS} );  # returns ref for further use
+}
+
+sub set_prefs {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_PREFS} = $self->resolve_prefs_node_to_hash( $new_value );
+	}
+}
+
+sub pref {
+	my ($self, $key, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_PREFS}->{$key} = $new_value;
+	}
+	return( $self->{$KEY_PREFS}->{$key} );
+}
+
+######################################################################
+
+=head1 METHODS FOR USER INPUT
+
+These methods are accessors for the "user input" properties of this object, 
+which include: "user path", "user query", "user post", and "user cookies".  
+These properties store parsed copies of the various information that the web 
+user provided when invoking this program instance.  Note that you should not 
+modify the user input in your program, since the recall methods depend on them.
+
+This class does not gather any user input itself, but expects your thin program
+instance shell to do that and hand the data to this class prior to starting the
+program core.  The rationale is both for keeping this class simpler and for
+keeping it compatible with all types of web servers instead of just the ones it
+knows about.  So it works equally well with CGI under any server or mod_perl or
+when your Perl is its own web server or when you are debugging on the command 
+line.  This class does know how to *parse* some url-encoded strings, however.
+
+The kind of input you need to gather depends on what your program uses, but it
+doesn't hurt to get more.  If you are in a CGI environment then you often get
+user input from the following places: 1. $ENV{QUERY_STRING} for the query string
+-- pass to user_query(); 2. <STDIN> for the post data -- pass to user_post(); 3.
+$ENV{HTTP_COOKIE} for the raw cookies -- pass to user_cookies(); 4. either
+$ENV{PATH_INFO} or a query parameter for the virtual web resource path -- pass to
+user_path().  If you are in mod_perl then you call Apache methods to get the user
+input.  If you are your own server then the incoming HTTP headers contain 
+everything except the post data, which is in the HTTP body.  If you are on the 
+command line then you can look in @ARGV or <STDIN> as is your preference.
+
+The virtual web resource path is a concept with HTML::Application designed to 
+make it easy for different user interface pages of your program to be identified 
+and call each other in the web environment.  The idea is that all the interface 
+components that the user sees have a unique uri and can be organized 
+hierarchically like a tree; by invoking your program with a different "path", 
+the user indicates what part of the program they want to use.  It is analogous 
+to choosing different html pages on a normal web site because each page has a 
+separate uri on the server, and each page calls others by using different uris.  
+What makes the virtual paths different is that each uri does not correspond to 
+a different file; the user just pretends they do.  Ultimately you have control 
+over what your program does with any particular virtual "user path".
+
+The user path property is a File::VirtualPath object, and the other user input 
+properties are each CGI::MultiValuedHash objects, so please see the respective 
+POD for those classes to learn about their features.  Note that the user path 
+always works in the virtual space and has no physical equivalent like file path.
+
+=head2 get_user_path_ref()
+
+This method returns a reference to the user path object which you can then
+manipulate directly with File::VirtualPath methods.
+
+=head2 user_path([ VALUE ])
+
+This method is an accessor to the user path, which it returns as an array ref. 
+If VALUE is defined then this property is set to it; it can be an array of path
+levels or a string representation.
+
+=head2 user_path_string([ TRAILER ])
+
+This method returns a string representation of the user path. If the optional
+argument TRAILER is true, then a "/" is appended.
+
+=head2 user_path_element( INDEX[, NEW_VALUE] )
+
+This method is an accessor for individual segments of the "user path" property of 
+this object, and it returns the one at INDEX.  If NEW_VALUE is defined then 
+the segment at INDEX is set to it.  This method is useful if you want to examine 
+user path segments one at a time.  INDEX defaults to 0, meaning you are 
+looking at the first segment, which happens to always be empty.  That said, this 
+method will let you change this condition if you want to.
+
+=head2 current_user_path_level([ NEW_VALUE ])
+
+This method is an accessor for the number "current path level" property of the user 
+input, which it returns.  If NEW_VALUE is defined, this property is set to it.  
+If you want to examine the user path segments sequentially then this property 
+tracks the index of the segment you are currently viewing.  This property 
+defaults to 0, the first segment, which always happens to be an empty string.
+
+=head2 inc_user_path_level()
+
+This method will increment the "current path level" property by 1 so 
+you can view the next path segment.  The new current value is returned.
+
+=head2 dec_user_path_level()
+
+This method will decrement the "current path level" property by 1 so 
+you can view the previous path segment.  The new current value is returned.  
+
+=head2 current_user_path_element([ NEW_VALUE ])
+
+This method is an accessor for individual segments of the "user path" property of 
+this object, the current one of which it returns.  If NEW_VALUE is defined then 
+the current segment is set to it.  This method is useful if you want to examine 
+user path segments one at a time in sequence.  The segment you are looking at 
+now is determined by the current_user_path_level() method; by default you are 
+looking at the first segment, which is always an empty string.  That said, this 
+method will let you change this condition if you want to.
+
+=cut
+
+######################################################################
+
+sub get_user_path_ref {
+	return( $_[0]->{$KEY_UI_PATH} );  # returns ref for further use
+}
+
+sub user_path {
+	my ($self, $new_value) = @_;
+	return( $self->{$KEY_UI_PATH}->path( $new_value ) );
+}
+
+sub user_path_string {
+	my ($self, $trailer) = @_;
+	return( $self->{$KEY_UI_PATH}->path_string( $trailer ) );
+}
+
+sub user_path_element {
+	my ($self, $index, $new_value) = @_;
+	return( $self->{$KEY_UI_PATH}->path_element( $index, $new_value ) );
+}
+
+sub current_user_path_level {
+	my ($self, $new_value) = @_;
+	return( $self->{$KEY_UI_PATH}->current_path_level( $new_value ) );
+}
+
+sub inc_user_path_level {
+	return( $_[0]->{$KEY_UI_PATH}->inc_path_level() );
+}
+
+sub dec_user_path_level {
+	return( $_[0]->{$KEY_UI_PATH}->dec_path_level() );
+}
+
+sub current_user_path_element {
+	my ($self, $new_value) = @_;
+	return( $self->{$KEY_UI_PATH}->current_path_element( $new_value ) );
+}
+
+######################################################################
+
+=head2 get_user_query_ref()
+
+This method returns a reference to the user query object which you can then
+manipulate directly with CGI::MultiValuedHash methods.
+
+=head2 user_query([ VALUE ])
+
+This method is an accessor to the user query, which it returns as a 
+cloned CGI::MultiValuedHash object.  If VALUE is defined then it is used to 
+initialize a new user query.
+
+=head2 user_query_string()
+
+This method url-encodes the user query and returns it as a string.
+
+=head2 user_query_param( KEY[, VALUES] )
+
+This method is an accessor for individual user query parameters.  If there are
+any VALUES then this method stores them in the query under the name KEY and
+returns a count of values now associated with KEY.  VALUES can be either an array
+ref or a literal list and will be handled correctly.  If there are no VALUES then
+the current value(s) associated with KEY are returned instead.  If this method is
+called in list context then all of the values are returned as a literal list; in
+scalar context, this method returns only the first value.  The 3 cases that this
+method handles are implemented with the query object's [store( KEY, *), fetch(
+KEY ), fetch_value( KEY )] methods, respectively.  (This method is designed to 
+work like CGI.pm's param() method, if you like that sort of thing.)
+
+=cut
+
+######################################################################
+
+sub get_user_query_ref {
+	return( $_[0]->{$KEY_UI_QUER} );  # returns ref for further use
+}
+
+sub user_query {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_UI_QUER} = CGI::MultiValuedHash->new( 0, $new_value );
+	}
+	return( $self->{$KEY_UI_QUER}->clone() );
+}
+
+sub user_query_string {
+	return( $_[0]->{$KEY_UI_QUER}->to_url_encoded_string() );
+}
+
+sub user_query_param {
+	my $self = shift( @_ );
+	my $key = shift( @_ );
+	if( @_ ) {
+		return( $self->{$KEY_UI_QUER}->store( $key, @_ ) );
+	} elsif( wantarray ) {
+		return( @{$self->{$KEY_UI_QUER}->fetch( $key ) || []} );
+	} else {
+		return( $self->{$KEY_UI_QUER}->fetch_value( $key ) );
+	}
+}
+
+######################################################################
+
+=head2 get_user_post_ref()
+
+This method returns a reference to the user post object which you can then
+manipulate directly with CGI::MultiValuedHash methods.
+
+=head2 user_post([ VALUE ])
+
+This method is an accessor to the user post, which it returns as a 
+cloned CGI::MultiValuedHash object.  If VALUE is defined then it is used to 
+initialize a new user post.
+
+=head2 user_post_string()
+
+This method url-encodes the user post and returns it as a string.
+
+=head2 user_post_param( KEY[, VALUES] )
+
+This method is an accessor for individual user post parameters.  If there are
+any VALUES then this method stores them in the post under the name KEY and
+returns a count of values now associated with KEY.  VALUES can be either an array
+ref or a literal list and will be handled correctly.  If there are no VALUES then
+the current value(s) associated with KEY are returned instead.  If this method is
+called in list context then all of the values are returned as a literal list; in
+scalar context, this method returns only the first value.  The 3 cases that this
+method handles are implemented with the post object's [store( KEY, *), fetch(
+KEY ), fetch_value( KEY )] methods, respectively.  (This method is designed to 
+work like CGI.pm's param() method, if you like that sort of thing.)
+
+=cut
+
+######################################################################
+
+sub get_user_post_ref {
+	return( $_[0]->{$KEY_UI_POST} );  # returns ref for further use
+}
+
+sub user_post {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_UI_POST} = CGI::MultiValuedHash->new( 0, $new_value );
+	}
+	return( $self->{$KEY_UI_POST}->clone() );
+}
+
+sub user_post_string {
+	return( $_[0]->{$KEY_UI_POST}->to_url_encoded_string() );
+}
+
+sub user_post_param {
+	my $self = shift( @_ );
+	my $key = shift( @_ );
+	if( @_ ) {
+		return( $self->{$KEY_UI_POST}->store( $key, @_ ) );
+	} elsif( wantarray ) {
+		return( @{$self->{$KEY_UI_POST}->fetch( $key ) || []} );
+	} else {
+		return( $self->{$KEY_UI_POST}->fetch_value( $key ) );
+	}
+}
+
+######################################################################
+
+=head2 get_user_cookies_ref()
+
+This method returns a reference to the user cookies object which you can then
+manipulate directly with CGI::MultiValuedHash methods.
+
+=head2 user_cookies([ VALUE ])
+
+This method is an accessor to the user cookies, which it returns as a 
+cloned CGI::MultiValuedHash object.  If VALUE is defined then it is used to 
+initialize a new user query.
+
+=head2 user_cookies_string()
+
+This method cookie-url-encodes the user cookies and returns them as a string.
+
+=head2 user_cookie( NAME[, VALUES] )
+
+This method is an accessor for individual user cookies.  If there are
+any VALUES then this method stores them in the cookie with the name NAME and
+returns a count of values now associated with NAME.  VALUES can be either an array
+ref or a literal list and will be handled correctly.  If there are no VALUES then
+the current value(s) associated with NAME are returned instead.  If this method is
+called in list context then all of the values are returned as a literal list; in
+scalar context, this method returns only the first value.  The 3 cases that this
+method handles are implemented with the query object's [store( NAME, *), fetch(
+NAME ), fetch_value( NAME )] methods, respectively.  (This method is designed to 
+work like CGI.pm's param() method, if you like that sort of thing.)
+
+=cut
+
+######################################################################
+
+sub get_user_cookies_ref {
+	return( $_[0]->{$KEY_UI_COOK} );  # returns ref for further use
+}
+
+sub user_cookies {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_UI_COOK} = CGI::MultiValuedHash->new( 0, 
+			$new_value, '; ', '&' );
+	}
+	return( $self->{$KEY_UI_COOK}->clone() );
+}
+
+sub user_cookies_string {
+	return( $_[0]->{$KEY_UI_COOK}->to_url_encoded_string( '; ', '&' ) );
+}
+
+sub user_cookie {
+	my $self = shift( @_ );
+	my $name = shift( @_ );
+	if( @_ ) {
+		return( $self->{$KEY_UI_COOK}->store( $name, @_ ) );
+	} elsif( wantarray ) {
+		return( @{$self->{$KEY_UI_COOK}->fetch( $name ) || []} );
+	} else {
+		return( $self->{$KEY_UI_COOK}->fetch_value( $name ) );
+	}
+}
+
+######################################################################
+
+=head1 METHODS FOR MAKING NEW SELF-REFERENCING URLS
+
+These methods are accessors for the "url constructor" properties of this object,
+which are designed to store components of the various information needed to make
+new urls that call this script back in order to change from one interface screen
+to another.  When the program is reinvoked with one of these urls, this
+information becomes part of the user input, particularly the "user path" and
+"user query".  You normally use the url_as_string() method to do the actual
+assembly of these components, but the various "recall" methods also pay attention
+to them.
+
+=head2 url_base([ VALUE ])
+
+This method is an accessor for the "url base" scalar property of this object,
+which it returns.  If VALUE is defined, this property is set to it.
+When new urls are made, the "url base" is used unchanged as its left end.  
+Normally it would consist of a protocol, host domain, port (optional), 
+script name, and would look like "protocol://host[:port][script]".  
+For example, "http://aardvark.net/main.pl" or "http://aardvark.net:450/main.pl".
+This property defaults to "http://localhost/".
+
+=cut
+
+######################################################################
+
+sub url_base {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_URL_BASE} = $new_value;
+	}
+	return( $self->{$KEY_URL_BASE} );
+}
+
+######################################################################
+
+=head2 get_url_path_ref()
+
+This method returns a reference to the url path object which you can then
+manipulate directly with File::VirtualPath methods.
+
+=head2 url_path([ VALUE ])
+
+This method is an accessor to the url path, which it returns as an array ref.  
+If VALUE is defined then this property is set to it; it can be an array of path
+levels or a string representation.
+
+=head2 url_path_string([ TRAILER ])
+
+This method returns a string representation of the url path.  If the optional
+argument TRAILER is true, then a "/" is appended.
+
+=head2 navigate_url_path( CHANGE_VECTOR )
+
+This method updates the url path by taking the current one and applying
+CHANGE_VECTOR to it using the FVP's chdir() method. This method returns an array
+ref having the changed url path.
+
+=head2 child_url_path_string( CHANGE_VECTOR[, WANT_TRAILER] )
+
+This method uses CHANGE_VECTOR to derive a new url path relative to the current
+one and returns it as a string.  If WANT_TRAILER is true then the string has a
+path delimiter appended; otherwise, there is none.
+
+=cut
+
+######################################################################
+
+sub get_url_path_ref {
+	return( $_[0]->{$KEY_URL_PATH} );  # returns ref for further use
+}
+
+sub url_path {
+	my ($self, $new_value) = @_;
+	return( $self->{$KEY_URL_PATH}->path( $new_value ) );
+}
+
+sub url_path_string {
+	my ($self, $trailer) = @_;
+	return( $self->{$KEY_URL_PATH}->path_string( $trailer ) );
+}
+
+sub navigate_url_path {
+	my ($self, $chg_vec) = @_;
+	$self->{$KEY_URL_PATH}->chdir( $chg_vec );
+}
+
+sub child_url_path_string {
+	my ($self, $chg_vec, $trailer) = @_;
+	return( $self->{$KEY_URL_PATH}->child_path_string( $chg_vec, $trailer ) );
+}
+
+######################################################################
+
+=head2 get_url_query_ref()
+
+This method returns a reference to the "url query" object which you can then
+manipulate directly with CGI::MultiValuedHash methods.
+
+=head2 url_query([ VALUE ])
+
+This method is an accessor to the "url query", which it returns as a 
+cloned CGI::MultiValuedHash object.  If VALUE is defined then it is used to 
+initialize a new user query.
+
+=head2 url_query_string()
+
+This method url-encodes the url query and returns it as a string.
+
+=head2 url_query_param( KEY[, VALUES] )
+
+This method is an accessor for individual url query parameters.  If there are
+any VALUES then this method stores them in the query under the name KEY and
+returns a count of values now associated with KEY.  VALUES can be either an array
+ref or a literal list and will be handled correctly.  If there are no VALUES then
+the current value(s) associated with KEY are returned instead.  If this method is
+called in list context then all of the values are returned as a literal list; in
+scalar context, this method returns only the first value.  The 3 cases that this
+method handles are implemented with the query object's [store( KEY, *), fetch(
+KEY ), fetch_value( KEY )] methods, respectively.  (This method is designed to 
+work like CGI.pm's param() method, if you like that sort of thing.)
+
+=cut
+
+######################################################################
+
+sub get_url_query_ref {
+	return( $_[0]->{$KEY_URL_QUER} );  # returns ref for further use
+}
+
+sub url_query {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_URL_QUER} = CGI::MultiValuedHash->new( 0, $new_value );
+	}
+	return( $self->{$KEY_URL_QUER}->clone() );
+}
+
+sub url_query_string {
+	return( $_[0]->{$KEY_URL_QUER}->to_url_encoded_string() );
+}
+
+sub url_query_param {
+	my $self = shift( @_ );
+	my $key = shift( @_ );
+	if( @_ ) {
+		return( $self->{$KEY_URL_QUER}->store( $key, @_ ) );
+	} elsif( wantarray ) {
+		return( @{$self->{$KEY_URL_QUER}->fetch( $key ) || []} );
+	} else {
+		return( $self->{$KEY_URL_QUER}->fetch_value( $key ) );
+	}
+}
+
+######################################################################
+
+=head2 url_path_is_in_path_info([ VALUE ])
+
+This method is an accessor for the "url path is in path info" boolean property 
+of this object, which it returns.  If VALUE is defined, this property is set 
+to it.  If this property is true then the "url path" property will persist as 
+part of the "path_info" portion of all self-referencing urls.
+This property defaults to true.
+
+=cut
+
+######################################################################
+
+sub url_path_is_in_path_info {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_URL_PIPI} = $new_value;
+	}
+	return( $self->{$KEY_URL_PIPI} );
+}
+
+######################################################################
+
+=head2 url_path_is_in_query([ VALUE ])
+
+This method is an accessor for the "url path is in query" boolean property 
+of this object, which it returns.  If VALUE is defined, this property is set 
+to it.  If this property is true then the "url path" property will persist as 
+part of the "query_string" portion of all self-referencing urls.
+This property defaults to false.
+
+=cut
+
+######################################################################
+
+sub url_path_is_in_query {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_URL_PIQU} = $new_value;
+	}
+	return( $self->{$KEY_URL_PIQU} );
+}
+
+######################################################################
+
+=head2 url_path_query_param_name([ VALUE ])
+
+This method is an accessor for the "url path query param name" scalar property 
+of this object, which it returns.  If VALUE is defined, this property is set 
+to it.  If the url path persists as part of a query string, this method defines 
+the name of the query parameter that the url path is the value for.
+This property defaults to 'path'.
+
+=cut
+
+######################################################################
+
+sub url_path_query_param_name {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_URL_PQPN} = $new_value;
+	}
+	return( $self->{$KEY_URL_PQPN} );
+}
+
+######################################################################
+
+=head2 url_as_string([ CHANGE_VECTOR ])
+
+This method assembles the various "url *" properties of this object into a
+complete HTTP url and returns it as a string.  That is, it returns the cumulative
+string representation of those properties.  This consists of a url_base(),
+"path info", "query string", and would look like "base[info][?query]".
+For example, "http://aardvark.net/main.pl/lookup/title?name=plant&cost=low".
+Depending on your settings, the url path may be in the path_info or the 
+query_string or none or both.  If the optional argument CHANGE_VECTOR is true 
+then the result of applying it to the url path is used for the url path.  
+The above example showed the url path, "/lookup/title", in the path_info.  
+If it were in query_string instead then the url would look like 
+"http://aardvark.net/main.pl?path=/lookup/title&name=plant&cost=low".
+
+=cut
+
+######################################################################
+
+sub url_as_string {
+	my ($self, $chg_vec) = @_;
+	return( $self->_make_an_url( $self->url_query_string(), $chg_vec ? 
+		$self->child_url_path_string( $chg_vec ) : $self->url_path_string() ) );
+}
+
+# _make_an_url( QUERY, PATH )
+# This private method contains common code for some url-string-making methods. 
+# The two arguments refer to the path and query information that the new url 
+# will have.  This method combines these with the url base as appropriate, 
+# taking into account the settings for where the path should go.
+
+sub _make_an_url {
+	my ($self, $query, $path) = @_;
+	my ($base, $path_info, $query_string);
+	$base = $self->{$KEY_URL_BASE};
+	if( $self->{$KEY_URL_PIPI} ) {
+		$path_info = $path;
+	}
+	if( $self->{$KEY_URL_PIQU} ) {
+		$query_string = "$self->{$KEY_URL_PQPN}=$path".
+			($query ? "&$query" : '');
+	}
+	return( $base.$path_info.($query_string ? "?$query_string" : '') );
+}
+
+######################################################################
+
+=head1 METHODS FOR MAKING RECALL URLS
+
+These methods are designed to make HTML for the user to reinvoke this program 
+with their input intact.  They pay attention to both the current user input and 
+the current url constructor properties.  Specifically, these methods act like 
+url_as_string() in the way they use most url constructor properties, but they 
+use the user path and user query instead of the url path and url query.
+
+=head2 recall_url()
+
+This method creates a callback url that can be used to recall this program with 
+all query information intact.  It is intended for use as the "action" argument 
+in forms, or as the url for "try again" hyperlinks on error pages.  The format 
+of this url is determined partially by the "url *" properties, including 
+url_base() and anything describing where the "path" goes, if you use it.  
+Post data is not replicated here; see the recall_button() method.
+
+=head2 recall_hyperlink([ LABEL ])
+
+This method creates an HTML hyperlink that can be used to recall this program 
+with all query information intact.  The optional scalar argument LABEL defines 
+the text that the hyperlink surrounds, which is the blue text the user will see.
+LABEL defaults to "here" if not defined.  Post data is not replicated.  
+The url in the hyperlink is produced by recall_url().
+
+=head2 recall_button([ LABEL ])
+
+This method creates an HTML form out of a button and some hidden fields which 
+can be used to recall this program with all query and post information intact.  
+The optional scalar argument LABEL defines the button label that the user sees.
+LABEL defaults to "here" if not defined.  This form submits with "post".  
+Query and path information is replicated in the "action" url, produced by 
+recall_url(), and the post information is replicated in the hidden fields.
+
+=head2 recall_html([ LABEL ])
+
+This method selectively calls recall_button() or recall_hyperlink() depending 
+on whether there is any post information in the user input.  This is useful 
+when you want to use the least intensive option required to preserve your user 
+input and you don't want to figure out the when yourself.
+
+=cut
+
+######################################################################
+
+sub recall_url {
+	my ($self) = @_;
+	return( $self->_make_an_url( $self->user_query_string(), 
+		$self->user_path_string() ) );
+}
+
+sub recall_hyperlink {
+	my ($self, $label) = @_;
+	defined( $label ) or $label = 'here';
+	my $url = $self->recall_url();
+	return( "<A HREF=\"$url\">$label</A>" );
+}
+
+sub recall_button {
+	my ($self, $label) = @_;
+	defined( $label ) or $label = 'here';
+	my $url = $self->recall_url();
+	my $fields = $self->get_user_post_ref()->to_html_encoded_hidden_fields();
+	return( <<__endquote );
+<FORM METHOD="post" ACTION="$url">
+$fields
+<INPUT TYPE="submit" NAME="" VALUE="$label">
+</FORM>
+__endquote
+}
+
+sub recall_html {
+	my ($self, $label) = @_;
+	return( $self->get_user_post_ref()->keys_count() ? 
+		$self->recall_button( $label ) : $self->recall_hyperlink( $label ) );
+}
+
+######################################################################
+
+=head1 METHODS FOR MAKING NEW HTML PAGES
+
+These methods are designed to accumulate and assemble the components of a 
+new HTML page, complete with body, title, meta tags, and cascading style sheets.  
+The intent is for your core program to use these to store its user output, and 
+then your thin program config shell would actually send the page to the user.  
+Note that the "http body" property should not be used at the same time as these.
+
+=head2 page_title([ VALUE ])
+
+This method is an accessor for the "page title" scalar property of this object, 
+which it returns.  If VALUE is defined, this property is set to it.  
+This property is used in the header of a new HTML document to define its title.  
+Specifically, it goes between a <TITLE></TITLE> tag pair.
+
+=cut
+
+######################################################################
+
+sub page_title {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_PAGE_TITL} = $new_value;
+	}
+	return( $self->{$KEY_PAGE_TITL} );
+}
+
+######################################################################
+
+=head2 page_author([ VALUE ])
+
+This method is an accessor for the "page author" scalar property of this object, 
+which it returns.  If VALUE is defined, this property is set to it.  
+This property is used in the header of a new HTML document to define its author.  
+Specifically, it is used in a new '<LINK REV="made">' tag if defined.
+
+=cut
+
+######################################################################
+
+sub page_author {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_PAGE_AUTH} = $new_value;
+	}
+	return( $self->{$KEY_PAGE_AUTH} );
+}
+
+######################################################################
+
+=head2 get_page_meta_ref()
+
+This method is an accessor for the "page meta" hash property of this object, 
+a reference to which it returns.  Meta information is used in the header of a
+new HTML document to say things like what the best keywords are for a search 
+engine to index this page under.  Each key/value pair in the hash would have a 
+'<META NAME="k" VALUE="v">' tag made out of it.
+
+=head2 get_page_meta([ KEY ])
+
+This method allows you to get the "page meta" hash property of this object.
+If KEY is defined then it is taken as a key in the hash and the associated 
+value is returned.  If KEY is not defined then the entire hash is returned as 
+a list; in scalar context this list is in a new hash ref.
+
+=head2 set_page_meta( KEY[, VALUE] )
+
+This method allows you to set the "page meta" hash property of this object.
+If KEY is a valid HASH ref then all the existing meta information is replaced 
+with the new hash keys and values.  If KEY is defined but it is not a Hash ref, 
+then KEY and VALUE are inserted together into the existing hash.
+
+=cut
+
+######################################################################
+
+sub get_page_meta_ref {
+	return( $_[0]->{$KEY_PAGE_META} );  # returns ref for further use
+}
+
+sub get_page_meta {
+	my ($self, $key) = @_;
+	if( defined( $key ) ) {
+		return( $self->{$KEY_PAGE_META}->{$key} );
+	}
+	my %hash_copy = %{$self->{$KEY_PAGE_META}};
+	return( wantarray ? %hash_copy : \%hash_copy );
+}
+
+sub set_page_meta {
+	my ($self, $first, $second) = @_;
+	if( defined( $first ) ) {
+		if( ref( $first ) eq 'HASH' ) {
+			$self->{$KEY_PAGE_META} = {%{$first}};
+		} else {
+			$self->{$KEY_PAGE_META}->{$first} = $second;
+		}
+	}
+}
+
+######################################################################
+
+=head2 get_page_style_sources_ref()
+
+This method is an accessor for the "page style sources" array property of this 
+object, a reference to which it returns.  Cascading Style Sheet (CSS) definitions 
+are used in the header of a new HTML document to allow precise control over the 
+appearance of of page elements, something that HTML itself was not designed for.  
+This property stores urls for external documents having stylesheet definitions 
+that you want linked to the current document.  If this property is defined, then 
+a '<LINK REL="stylesheet" SRC="url">' tag would be made for each list element.
+
+=head2 get_page_style_sources()
+
+This method returns a list containing "page style sources" list elements.  This list 
+is returned literally in list context and as an array ref in scalar context.
+
+=head2 set_page_style_sources( VALUE )
+
+This method allows you to set or replace the current "page style sources" 
+definitions.  The argument VALUE can be either an array ref or literal list.
+
+=cut
+
+######################################################################
+
+sub get_page_style_sources_ref {
+	return( $_[0]->{$KEY_PAGE_CSSR} );  # returns ref for further use
+}
+
+sub get_page_style_sources {
+	my @array_copy = @{$_[0]->{$KEY_PAGE_CSSR}};
+	return( wantarray ? @array_copy : \@array_copy );
+}
+
+sub set_page_style_sources {
+	my $self = shift( @_ );
+	my $ra_values = ref( $_[0] ) eq 'ARRAY' ? $_[0] : \@_;
+	@{$self->{$KEY_PAGE_CSSR}} = @{$ra_values};
+}
+
+######################################################################
+
+=head2 get_page_style_code_ref()
+
+This method is an accessor for the "page style code" array property of this 
+object, a reference to which it returns.  Cascading Style Sheet (CSS) definitions 
+are used in the header of a new HTML document to allow precise control over the 
+appearance of of page elements, something that HTML itself was not designed for.  
+This property stores CSS definitions that you want embedded in the HTML document 
+itself.  If this property is defined, then a "<STYLE><!-- code --></STYLE>"
+multi-line tag is made for them.
+
+=head2 get_page_style_code()
+
+This method returns a list containing "page style code" list elements.  This list 
+is returned literally in list context and as an array ref in scalar context.
+
+=head2 set_page_style_code( VALUE )
+
+This method allows you to set or replace the current "page style code" 
+definitions.  The argument VALUE can be either an array ref or literal list.
+
+=cut
+
+######################################################################
+
+sub get_page_style_code_ref {
+	return( $_[0]->{$KEY_PAGE_CSSC} );  # returns ref for further use
+}
+
+sub get_page_style_code {
+	my @array_copy = @{$_[0]->{$KEY_PAGE_CSSC}};
+	return( wantarray ? @array_copy : \@array_copy );
+}
+
+sub set_page_style_code {
+	my $self = shift( @_ );
+	my $ra_values = ref( $_[0] ) eq 'ARRAY' ? $_[0] : \@_;
+	@{$self->{$KEY_PAGE_CSSC}} = @{$ra_values};
+}
+
+######################################################################
+
+=head2 get_page_head_ref()
+
+This method is an accessor for the "page head" array property of this object, 
+a reference to which it returns.  While this property actually represents a 
+scalar value, it is stored as an array for possible efficiency, considering that 
+new portions may be appended or prepended to it as the program runs.
+This property is inserted between the "<HEAD></HEAD>" tags of a new HTML page, 
+following any other properties that go in that section.
+
+=head2 get_page_head()
+
+This method returns a string of the "page body" joined together.
+
+=head2 set_page_head( VALUE )
+
+This method allows you to set or replace the current "page head" with a new one.  
+The argument VALUE can be either an array ref or scalar or literal list.
+
+=head2 append_page_head( VALUE )
+
+This method allows you to append content to the current "page head".  
+The argument VALUE can be either an array ref or scalar or literal list.
+
+=head2 prepend_page_head( VALUE )
+
+This method allows you to prepend content to the current "page head".  
+The argument VALUE can be either an array ref or scalar or literal list.
+
+=cut
+
+######################################################################
+
+sub get_page_head_ref {
+	return( $_[0]->{$KEY_PAGE_HEAD} );  # returns ref for further use
+}
+
+sub get_page_head {
+	return( join( '', @{$_[0]->{$KEY_PAGE_HEAD}} ) );
+}
+
+sub set_page_head {
+	my $self = shift( @_ );
+	my $ra_values = ref( $_[0] ) eq 'ARRAY' ? $_[0] : \@_;
+	@{$self->{$KEY_PAGE_HEAD}} = @{$ra_values};
+}
+
+sub append_page_head {
+	my $self = shift( @_ );
+	my $ra_values = ref( $_[0] ) eq 'ARRAY' ? $_[0] : \@_;
+	push( @{$self->{$KEY_PAGE_HEAD}}, @{$ra_values} );
+}
+
+sub prepend_page_head {
+	my $self = shift( @_ );
+	my $ra_values = ref( $_[0] ) eq 'ARRAY' ? $_[0] : \@_;
+	unshift( @{$self->{$KEY_PAGE_HEAD}}, @{$ra_values} );
+}
+
+######################################################################
+
+=head2 get_page_body_attributes_ref()
+
+This method is an accessor for the "page body attributes" hash property of this 
+object, a reference to which it returns.  Each key/value pair in the hash would 
+become an attribute key/value of the opening <BODY> tag of a new HTML document.
+With the advent of CSS there wasn't much need to have the BODY tag attributes, 
+but you may wish to do this for older browsers.  In the latter case you could 
+use body attributes to define things like the page background color or picture.
+
+=head2 get_page_body_attributes([ KEY ])
+
+This method allows you to get the "page body attributes" hash property of this 
+object.  If KEY is defined then it is taken as a key in the hash and the 
+associated value is returned.  If KEY is not defined then the entire hash is 
+returned as a list; in scalar context this list is in a new hash ref.
+
+=head2 set_page_body_attributes( KEY[, VALUE] )
+
+This method allows you to set the "page body attributes" hash property of this 
+object.  If KEY is a valid HASH ref then all the existing attrib information is 
+replaced with the new hash keys and values.  If KEY is defined but it is not a 
+Hash ref, then KEY and VALUE are inserted together into the existing hash.
+
+=cut
+
+######################################################################
+
+sub get_page_body_attributes_ref {
+	return( $_[0]->{$KEY_PAGE_BATR} );  # returns ref for further use
+}
+
+sub get_page_body_attributes {
+	my ($self, $key) = @_;
+	if( defined( $key ) ) {
+		return( $self->{$KEY_PAGE_BATR}->{$key} );
+	}
+	my %hash_copy = %{$self->{$KEY_PAGE_BATR}};
+	return( wantarray ? %hash_copy : \%hash_copy );
+}
+
+sub set_page_body_attributes {
+	my ($self, $first, $second) = @_;
+	if( defined( $first ) ) {
+		if( ref( $first ) eq 'HASH' ) {
+			$self->{$KEY_PAGE_BATR} = {%{$first}};
+		} else {
+			$self->{$KEY_PAGE_BATR}->{$first} = $second;
+		}
+	}
+}
+
+######################################################################
+
+=head2 get_page_body_ref()
+
+This method is an accessor for the "page body" array property of this object, 
+a reference to which it returns.  While this property actually represents a 
+scalar value, it is stored as an array for possible efficiency, considering that 
+new portions may be appended or prepended to it as the program runs.
+This property is inserted between the "<BODY></BODY>" tags of a new HTML page.
+
+=head2 get_page_body()
+
+This method returns a string of the "page body" joined together.
+
+=head2 set_page_body( VALUE )
+
+This method allows you to set or replace the current "page body" with a new one.  
+The argument VALUE can be either an array ref or scalar or literal list.
+
+=head2 append_page_body( VALUE )
+
+This method allows you to append content to the current "page body".  
+The argument VALUE can be either an array ref or scalar or literal list.
+
+=head2 prepend_page_body( VALUE )
+
+This method allows you to prepend content to the current "page body".  
+The argument VALUE can be either an array ref or scalar or literal list.
+
+=cut
+
+######################################################################
+
+sub get_page_body_ref {
+	return( $_[0]->{$KEY_PAGE_BODY} );  # returns ref for further use
+}
+
+sub get_page_body {
+	return( join( '', @{$_[0]->{$KEY_PAGE_BODY}} ) );
+}
+
+sub set_page_body {
+	my $self = shift( @_ );
+	my $ra_values = ref( $_[0] ) eq 'ARRAY' ? $_[0] : \@_;
+	@{$self->{$KEY_PAGE_BODY}} = @{$ra_values};
+}
+
+sub append_page_body {
+	my $self = shift( @_ );
+	my $ra_values = ref( $_[0] ) eq 'ARRAY' ? $_[0] : \@_;
+	push( @{$self->{$KEY_PAGE_BODY}}, @{$ra_values} );
+}
+
+sub prepend_page_body {
+	my $self = shift( @_ );
+	my $ra_values = ref( $_[0] ) eq 'ARRAY' ? $_[0] : \@_;
+	unshift( @{$self->{$KEY_PAGE_BODY}}, @{$ra_values} );
+}
+
+######################################################################
+
+=head2 page_as_string()
+
+This method assembles the various "page *" properties of this object into a 
+complete HTML page and returns it as a string.  That is, it returns the 
+cumulative string representation of those properties.  This consists of a 
+prologue tag, a pair of "html" tags, and everything in between.
+This method uses HTML::EasyTags to do the actual page assembly, and so the 
+results are consistant with its abilities.
+
+=cut
+
+######################################################################
+
+sub page_as_string {
+	my $self = shift( @_ );
+	my $html = HTML::EasyTags->new();
+	my ($title,$author,$meta,$css_src,$css_code);
+
+	$self->{$KEY_PAGE_AUTH} and $author = 
+		$html->link( rev => 'made', href => "mailto:$self->{$KEY_PAGE_AUTH}" );
+
+	%{$self->{$KEY_PAGE_META}} and $meta = join( '', map { 
+		$html->meta_group( name => $_, value => $self->{$KEY_PAGE_META}->{$_} ) 
+		} keys %{$self->{$KEY_PAGE_META}} );
+
+	@{$self->{$KEY_PAGE_CSSR}} and $css_src = 
+		$html->link_group( rel => 'stylesheet', type => 'text/css', 
+		href => $self->{$KEY_PAGE_CSSR} );
+
+	@{$self->{$KEY_PAGE_CSSC}} and $css_code = 
+		$html->style( $html->comment_tag( $self->{$KEY_PAGE_CSSC} ) );
+
+	return( join( '', 
+		$html->start_html(
+			$self->{$KEY_PAGE_TITL},
+			[ $author, $meta, $css_src, $css_code, @{$self->{$KEY_PAGE_HEAD}} ], 
+			$self->{$KEY_PAGE_BATR}, 
+		), 
+		@{$self->{$KEY_PAGE_BODY}},
+		$html->end_html(),
+	) );
+}
+
+######################################################################
+
+=head1 METHODS FOR MAKING NEW HTTP RESPONSES
+
+These methods are designed to accumulate and assemble the components of an HTTP 
+response, complete with status code, content type, other headers, and a body.
+The intent is for your core program to use these to store its user output, and 
+then your thin program config shell would actually send the page to the user.  
+These properties are initialized with values suitable for returning an HTML page.
+The "http body" property is intended for use when you want to return raw content 
+of any type, whether it is text or image or other binary.  It is a complement 
+for the html assembling methods and should be left undefined if they are used.  
+
+=head2 http_status_code([ VALUE ])
+
+This method is an accessor for the "status code" scalar property of this object,
+which it returns.  If VALUE is defined, this property is set to it.
+This property is used in a new HTTP header to give the result status of the 
+HTTP request that this program is serving.  It defaults to "200 OK" which means 
+success and that the HTTP body contains the document they requested.
+Unlike other HTTP header content, this property is special and must be the very 
+first thing that the HTTP server returns, on a line like "HTTP/1.0 200 OK".
+However, the property also may appear elsewhere in the header, on a line like 
+"Status: 200 OK".
+
+=cut
+
+######################################################################
+
+sub http_status_code {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_HTTP_STAT} = $new_value;
+	}
+	return( $self->{$KEY_HTTP_STAT} );
+}
+
+######################################################################
+
+=head2 http_content_type([ VALUE ])
+
+This method is an accessor for the "content type" scalar property of this object,
+which it returns.  If VALUE is defined, this property is set to it.
+This property is used in a new HTTP header to indicate the document type that 
+the HTTP body is, such as text or image.  It defaults to "text/html" which means 
+we are returning an HTML page.  This property would be used in a line like 
+"Content-type: text/html".
+
+=cut
+
+######################################################################
+
+sub http_content_type {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_HTTP_COTY} = $new_value;
+	}
+	return( $self->{$KEY_HTTP_COTY} );
+}
+
+######################################################################
+
+=head2 http_redirect_url([ VALUE ])
+
+This method is an accessor for the "redirect url" scalar property of this object,
+which it returns.  If VALUE is defined, this property is set to it.
+This property is used in a new HTTP header to indicate that we don't have the 
+document that the user wants, but we do know where they can get it.
+If this property is defined then it contains the url we redirect to.
+
+=cut
+
+######################################################################
+
+sub http_redirect_url {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_HTTP_REDI} = $new_value;
+	}
+	return( $self->{$KEY_HTTP_REDI} );
+}
+
+######################################################################
+
+=head2 get_http_cookie_refs()
+
+This method returns a list of references for outgoing http cookies, each of which 
+is a Data::MultiValuedHash object.  The list is 
+returned as a literal list in list context and in an array ref in scalar context.
+
+=head2 get_http_cookies()
+
+This method returns a list of clones of outgoing http cookies.  The list is 
+returned as a literal list in list context and in an array ref in scalar context.
+
+=head2 add_http_cookies( COOKIE_LIST )
+
+This method takes a literal list of initializers as COOKIE_LIST and creates a 
+new Data::MultiValuedHash object from each one, appending them to the list of 
+outgoing http cookies.  Each of these objects will make a single cookie, and 
+keys for it include name, value, date, valid domains, and so forth.  This class 
+doesn't interpret them itself, but rather the thin program config shell can take 
+the DMVH objects and process, encode, deliver them as it sees fit.
+
+=head2 delete_http_cookies()
+
+This method deletes all of the internally stored outgoing http cookies.
+
+=head2 get_http_cookie_ref([ INDEX ])
+
+This method returns a reference to a single outgoing http cookie object, taken 
+from index INDEX from the internal array of outgoing cookies.  INDEX defaults to 
+-1 if not defined, the most recently added cookie.  If there is no object at 
+INDEX then undef is returned.
+
+=head2 get_http_cookie([ INDEX ])
+
+This method returns a clone of a single outgoing http cookie object, taken 
+from index INDEX from the internal array of outgoing cookies.  INDEX defaults to 
+-1 if not defined, the most recently added cookie.  If there is no object at 
+INDEX then undef is returned.
+
+=cut
+
+######################################################################
+
+sub get_http_cookie_refs {
+	my @cookies = @{$_[0]->{$KEY_HTTP_COOK}};
+	return( wantarray ? @cookies : \@cookies );  
+}
+
+sub get_http_cookies {
+	my @cookies = map { $_->clone() } @{$_[0]->{$KEY_HTTP_COOK}};
+	return( wantarray ? @cookies : \@cookies );  
+}
+
+sub add_http_cookies {
+	my ($self, @cookies) = @_;
+	@cookies = map { Data::MultiValuedHash->new( 0, $_ ) } @cookies;
+	push( @{$self->{$KEY_HTTP_COOK}}, @cookies );
+}
+
+sub delete_http_cookies {
+	$_[0]->{$KEY_HTTP_COOK} = [];
+}
+
+sub get_http_cookie_ref {
+	my ($self, $index) = @_;
+	defined( $index ) or $index = -1;
+	return( $self->{$KEY_HTTP_COOK}->[$index] );
+}
+
+sub get_http_cookie {
+	my ($self, $index) = @_;
+	defined( $index ) or $index = -1;
+	my $cookie = $self->{$KEY_HTTP_COOK}->[$index];
+	return( defined( $cookie ) ? $cookie->clone() : undef );
+}
+
+######################################################################
+
+=head2 get_http_headers_ref()
+
+This method is an accessor for the "misc http headers" hash property of this
+object, a reference to which it returns.  HTTP headers constitute the first of
+two main parts of an HTTP response, and says things like the current date, server
+type, content type of the document, cookies to set, and more.  Some of these have
+their own methods, above, if you wish to use them.  Each key/value pair in the
+hash would be used in a line like "Key: value".
+
+=head2 get_http_headers([ KEY ])
+
+This method allows you to get the "misc http headers" hash property of this
+object. If KEY is defined then it is taken as a key in the hash and the
+associated value is returned.  If KEY is not defined then the entire hash is
+returned as a list; in scalar context this list is in a new hash ref.
+
+=head2 set_http_headers( KEY[, VALUE] )
+
+This method allows you to set the "misc http headers" hash property of this
+object. If KEY is a valid HASH ref then all the existing headers information is
+replaced with the new hash keys and values.  If KEY is defined but it is not a
+Hash ref, then KEY and VALUE are inserted together into the existing hash.
+
+=cut
+
+######################################################################
+
+sub get_http_headers_ref {
+	return( $_[0]->{$KEY_HTTP_HEAD} );  # returns ref for further use
+}
+
+sub get_http_headers {
+	my ($self, $key) = @_;
+	if( defined( $key ) ) {
+		return( $self->{$KEY_HTTP_HEAD}->{$key} );
+	}
+	my %hash_copy = %{$self->{$KEY_HTTP_HEAD}};
+	return( wantarray ? %hash_copy : \%hash_copy );
+}
+
+sub set_http_headers {
+	my ($self, $first, $second) = @_;
+	if( defined( $first ) ) {
+		if( ref( $first ) eq 'HASH' ) {
+			$self->{$KEY_HTTP_HEAD} = {%{$first}};
+		} else {
+			$self->{$KEY_HTTP_HEAD}->{$first} = $second;
+		}
+	}
+}
+
+######################################################################
+
+=head2 http_body([ VALUE ])
+
+This method is an accessor for the "http body" scalar property of this object,
+which it returns.  This contitutes the second of two main parts of
+an HTTP response, and contains the actual document that the user will view and/or
+can save to disk.  If this property is defined, then it will be used literally as
+the HTTP body part of the output.  If this property is not defined then a new
+HTTP body of type text/html will be assembled out of the various "page *"
+properties instead. This property defaults to undefined.
+
+=cut
+
+######################################################################
+
+sub http_body {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_HTTP_BODY} = $new_value;
+	}
+	return( $self->{$KEY_HTTP_BODY} );
+}
+
+######################################################################
+
+=head2 http_body_is_binary([ VALUE ])
+
+This method is an accessor for the "http body is binary" boolean property of this 
+object, which it returns.  If this property is true then it indicates that the 
+HTTP body is binary and should be output with binmode on.  It defaults to false.
+
+=cut
+
+######################################################################
+
+sub http_body_is_binary {
+	my ($self, $new_value) = @_;
+	if( defined( $new_value ) ) {
+		$self->{$KEY_HTTP_BINA} = $new_value;
+	}
+	return( $self->{$KEY_HTTP_BINA} );
+}
+
+######################################################################
+
+=head1 METHODS FOR MISCELLANEOUS OBJECT SERVICES
+
+=head2 get_misc_objects_ref()
+
+This method returns a reference to this object's "misc objects" hash property.  
+This hash stores references to any objects you want to pass between program 
+components with services that are beyond the scope of this class, such as 
+persistent database handles.  This hash ref is static across all objects of 
+this class that are derived from one another.
+
+=head2 replace_misc_objects( HASH_REF )
+
+This method lets this object have a "misc objects" property in common with 
+another object that it doesn't already.  If the argument HASH_REF is a hash ref, 
+then this property is set to it.
+
+=head2 separate_misc_objects()
+
+This method lets this object stop having a "misc objects" property in common 
+with another, by replacing that property with a new empty hash ref.
+
+=cut
+
+######################################################################
+
+sub get_misc_objects_ref {
+	return( $_[0]->{$KEY_MISC_OBJECTS} );
+}
+
+sub replace_misc_objects {
+	ref( $_[1] ) eq 'HASH' and $_[0]->{$KEY_MISC_OBJECTS} = $_[1];
+}
+
+sub separate_misc_objects {
+	$_[0]->{$KEY_MISC_OBJECTS} = {};
+}
+
+######################################################################
+
+=head1 METHODS FOR CONTEXT SWITCHING
+
+These methods are designed to facilitate easy modularity of your application 
+into multiple components by providing context switching functions for the parent 
+component in a relationship.  While you could still use this class effectively 
+without using them, they are available for your convenience.
+
+=head2 make_new_context([ CONTEXT ])
+
+This method initializes a new object of the current class and returns it.  This
+new object has some of the current object's properties but lacks others.
+Specifically, what does get copied is: debug state, file path, preferences, all 
+types of user input, the url constructor properties, and misc objects.  What does 
+not get copied is: error messages, html page components, and http response 
+components.  As with clone(), the new object can be provided in the optional 
+argument CONTEXT (if CONTEXT is an object of the same class); otherwise a brand 
+new object is used.  Only properties recognized by HTML::Application are set in 
+this object; others are not touched.  However, the first thing that this method 
+does is call initialize(), so you may want to override that method in subclasses.
+
+=cut
+
+######################################################################
+
+sub make_new_context {
+	my ($self, $context) = @_;
+	ref($context) eq ref($self) or $context = bless( {}, ref($self) );
+
+	$context->initialize();
+
+	$context->{$KEY_IS_DEBUG} = $self->{$KEY_IS_DEBUG};
+	$context->{$KEY_FILE_PATH} = $self->{$KEY_FILE_PATH}->clone();
+	$context->{$KEY_PREFS} = {%{$self->{$KEY_PREFS}}};
+
+	$context->{$KEY_UI_PATH} = $self->{$KEY_UI_PATH}->clone();
+	$context->{$KEY_UI_QUER} = $self->{$KEY_UI_QUER}->clone();
+	$context->{$KEY_UI_POST} = $self->{$KEY_UI_POST}->clone();
+	$context->{$KEY_UI_COOK} = $self->{$KEY_UI_COOK}->clone();
+
+	$context->{$KEY_URL_BASE} = $self->{$KEY_URL_BASE};
+	$context->{$KEY_URL_PATH} = $self->{$KEY_URL_PATH}->clone();
+	$context->{$KEY_URL_QUER} = $self->{$KEY_URL_QUER}->clone();
+	$context->{$KEY_URL_PIPI} = $self->{$KEY_URL_PIPI};
+	$context->{$KEY_URL_PIQU} = $self->{$KEY_URL_PIQU};
+	$context->{$KEY_URL_PQPN} = $self->{$KEY_URL_PQPN};
+
+	$context->{$KEY_MISC_OBJECTS} = $self->{$KEY_MISC_OBJECTS};  # copy hash ref
+
+	return( $context );
+}
+
+######################################################################
+
+=head2 call_component( COMP_NAME[, CANCEL_ON_ERROR] )
+
+This method can be used by one component to invoke another.  For this to work,
+the called component needs to be a Perl 5 module with a method called main(). The
+argument COMP_NAME is a string containing the name of the module to be invoked.
+This method will first "require [COMP_NAME]" and then invoke its dispatch method
+with a "[COMP_NAME]->main()".  These statements are wrapped in an "eval" block
+and if there was a compile or runtime failure then this method will log an error
+message like "can't use module '[COMP_NAME]': $@".  The call_component() method
+will pass a reference to the HTML::Application object it is invoked from as an
+argument to the main() method of the called module.  If you want the called
+component to get a different HTML::Application object then you will need to
+create it in your caller using make_new_context() or new() or clone(). If the
+boolean argument CANCEL_ON_ERROR is true then this method checks if there are
+errors already logged and if so it returns prior to ever requiring COMP_NAME. Any
+errors existing now were probably set by set_prefs(), meaning the component would
+be missing its config data.  CANCEL_ON_ERROR defaults to false, which means that
+your component will deal with its own startup error itself.
+
+=cut
+
+######################################################################
+
+sub call_component {
+	my ($self, $comp_name, $cancel_on_error) = @_;
+	$cancel_on_error and $self->get_error() and return();
+	eval {
+		# "require $comp_name;" yields can't find module in @INC error in 5.004
+		eval "require $comp_name;"; $@ and die;
+		$comp_name->main( $self );
+	};
+	$@ and $self->add_error( "can't use module '$comp_name': $@" );
+}
+
+######################################################################
+
+1;
+__END__
+
+=head1 AUTHOR
+
+Copyright (c) 1999-2001, Darren R. Duncan. All rights reserved. This module is
+free software; you can redistribute it and/or modify it under the same terms as
+Perl itself.  However, I do request that this copyright information remain
+attached to the file.  If you modify this module and redistribute a changed
+version then please attach a note listing the modifications.
+
+I am always interested in knowing how my work helps others, so if you put this
+module to use in any of your own code then please send me the URL.  Also, if you
+make modifications to the module because it doesn't work the way you need, please
+send me a copy so that I can roll desirable changes into the main release.
+
+Address comments, suggestions, and bug reports to B<perl@DarrenDuncan.net>.
+
+=head1 SEE ALSO
+
+perl(1), File::VirtualPath, HTML::EasyTags, Data::MultiValuedHash, 
+CGI::MultiValuedHash, HTML::FormTemplate, mod_perl, Apache, HTTP::Headers, 
+CGI::Cookie, CGI, CGI::Application, HTML::Template, HTML::Mason.
+
+=cut
