@@ -17,7 +17,7 @@ require 5.004;
 
 use strict;
 use vars qw($VERSION);
-$VERSION = '0.38';
+$VERSION = '0.4';
 
 ######################################################################
 
@@ -170,22 +170,23 @@ use CGI::MultiValuedHash 1.07;
 	use HTML::Application;
 	
 	sub main {
-		my ($self, $globals) = @_;
+		my ($class, $globals) = @_;
 		$globals->page_title( $globals->pref( 'title' ) );
 		my $users_choice = $globals->current_user_path_element();
 		my $rh_screens = $globals->pref( 'screens' );
 		
 		if( my $rh_screen = $rh_screens->{$users_choice} ) {
-			$globals->navigate_file_path( $rh_screen->{mod_subdir} );
-			$globals->set_prefs( $rh_screen->{mod_prefs} );
-			$globals->inc_user_path_level();
 			my $inner = $globals->make_new_context();
+			$inner->inc_user_path_level();
+			$inner->navigate_url_path( $users_choice );
+			$inner->navigate_file_path( $rh_screen->{mod_subdir} );
+			$inner->set_prefs( $rh_screen->{mod_prefs} );
 			$inner->call_component( $rh_screen->{mod_name}, 1 );
 			if( $inner->get_error() ) {
 				$globals->append_page_body( 
 					"Can't show requested screen: ".$inner->get_error() );
 			} else {
-				$globals->append_page_body( $inner->get_page_body() );
+				$globals->take_context_output( $inner, 1 );
 			}
 		
 		} else {
@@ -209,7 +210,7 @@ use CGI::MultiValuedHash 1.07;
 	use HTML::Application;
 	
 	sub main {
-		my ($self, $globals) = @_;
+		my ($class, $globals) = @_;
 		$globals->set_page_body( <<__endquote );
 	<P>Food: @{[$globals->pref( 'food' )]}
 	<BR>Color: @{[$globals->pref( 'color' )]}
@@ -233,7 +234,7 @@ use CGI::MultiValuedHash 1.07;
 	use HTML::Application;
 	
 	sub main {
-		my ($self, $globals) = @_;
+		my ($class, $globals) = @_;
 		my $url = $globals->pref( 'fly_to' );
 		$globals->http_status_code( '301 Moved' );
 		$globals->http_redirect_url( $url );
@@ -248,7 +249,7 @@ use CGI::MultiValuedHash 1.07;
 	use HTML::Application;
 	
 	sub main {
-		my ($self, $globals) = @_;
+		my ($class, $globals) = @_;
 		my $users_choice = $globals->current_user_path_element();
 		my $filename = $globals->pref( $users_choice );
 		my $filepath = $globals->physical_filename( $filename );
@@ -1519,8 +1520,10 @@ sub _make_an_url {
 	$base = $self->{$KEY_URL_BASE};
 	if( $self->{$KEY_URL_PIPI} ) {
 		$path_info = $path;
+		$query_string = $query;
 	}
 	if( $self->{$KEY_URL_PIQU} ) {
+		$path_info = '';
 		$query_string = "$self->{$KEY_URL_PQPN}=$path".
 			($query ? "&$query" : '');
 	}
@@ -2321,8 +2324,7 @@ not get copied is: error messages, html page components, and http response
 components.  As with clone(), the new object can be provided in the optional 
 argument CONTEXT (if CONTEXT is an object of the same class); otherwise a brand 
 new object is used.  Only properties recognized by HTML::Application are set in 
-this object; others are not touched.  However, the first thing that this method 
-does is call initialize(), so you may want to override that method in subclasses.
+this object; others are not touched.
 
 =cut
 
@@ -2332,9 +2334,8 @@ sub make_new_context {
 	my ($self, $context) = @_;
 	ref($context) eq ref($self) or $context = bless( {}, ref($self) );
 
-	$context->initialize();
-
 	$context->{$KEY_IS_DEBUG} = $self->{$KEY_IS_DEBUG};
+	$context->{$KEY_ERRORS} = [];
 	$context->{$KEY_FILE_PATH} = $self->{$KEY_FILE_PATH}->clone();
 	$context->{$KEY_PREFS} = {%{$self->{$KEY_PREFS}}};
 
@@ -2350,9 +2351,95 @@ sub make_new_context {
 	$context->{$KEY_URL_PIQU} = $self->{$KEY_URL_PIQU};
 	$context->{$KEY_URL_PQPN} = $self->{$KEY_URL_PQPN};
 
+	$context->{$KEY_PAGE_TITL} = undef;
+	$context->{$KEY_PAGE_AUTH} = undef;
+	$context->{$KEY_PAGE_META} = {};
+	$context->{$KEY_PAGE_CSSR} = [];
+	$context->{$KEY_PAGE_CSSC} = [];
+	$context->{$KEY_PAGE_HEAD} = [];
+	$context->{$KEY_PAGE_BATR} = {};
+	$context->{$KEY_PAGE_BODY} = [];
+
+	$context->{$KEY_HTTP_STAT} = '200 OK';
+	$context->{$KEY_HTTP_COTY} = 'text/html';
+	$context->{$KEY_HTTP_REDI} = undef;
+	$context->{$KEY_HTTP_COOK} = [];
+	$context->{$KEY_HTTP_HEAD} = {};
+	$context->{$KEY_HTTP_BODY} = undef;
+	$context->{$KEY_HTTP_BINA} = undef;
+
 	$context->{$KEY_MISC_OBJECTS} = $self->{$KEY_MISC_OBJECTS};  # copy hash ref
 
 	return( $context );
+}
+
+######################################################################
+
+=head2 take_context_output( CONTEXT[, APPEND_LISTS[, SKIP_SCALARS]] )
+
+This method takes another HTML::Application (or subclass) object as its CONTEXT
+argument and copies some of its properties to this object, potentially
+overwriting any versions already in this object.  If CONTEXT is not a valid
+HTML::Application (or subclass) object then this method returns without changing
+anything. The properties that get copied are the "output" properties that
+presumably need to work their way back to the user. Specifically, what does get
+copied is: error messages, html page components, and http response components.
+What does not get copied is: debug state, file path, preferences, all types of
+user input, the url constructor properties, and misc objects. In other words,
+this method copies everything that make_new_context() did not. If the optional
+boolean argument APPEND_LISTS is true then any list-type properties, including
+arrays and hashes, get appended to the existing values where possible rather than
+just replacing them.  In the case of hashes, however, keys with the same names
+are still replaced.  If the optional boolean argument SKIP_SCALARS is true then
+scalar properties are not copied over; otherwise they will always replace any
+that are in this object already.
+
+=cut
+
+######################################################################
+
+sub take_context_output {
+	my ($self, $context, $append_lists, $skip_scalars) = @_;
+	UNIVERSAL::isa( $context, 'HTML::Application' ) or return( 0 );
+
+	unless( $skip_scalars ) {
+		$self->{$KEY_PAGE_TITL} = $context->{$KEY_PAGE_TITL};
+		$self->{$KEY_PAGE_AUTH} = $context->{$KEY_PAGE_AUTH};
+		$self->{$KEY_HTTP_STAT} = $context->{$KEY_HTTP_STAT};
+		$self->{$KEY_HTTP_COTY} = $context->{$KEY_HTTP_COTY};
+		$self->{$KEY_HTTP_REDI} = $context->{$KEY_HTTP_REDI};
+		$self->{$KEY_HTTP_BODY} = $context->{$KEY_HTTP_BODY};
+		$self->{$KEY_HTTP_BINA} = $context->{$KEY_HTTP_BINA};
+	}
+	if( $append_lists ) {
+		push( @{$self->{$KEY_ERRORS}}, @{$self->{$KEY_ERRORS}} );
+		push( @{$self->{$KEY_PAGE_CSSR}}, @{$context->{$KEY_PAGE_CSSR}} );
+		push( @{$self->{$KEY_PAGE_CSSC}}, @{$context->{$KEY_PAGE_CSSC}} );
+		push( @{$self->{$KEY_PAGE_HEAD}}, @{$context->{$KEY_PAGE_HEAD}} );
+		push( @{$self->{$KEY_PAGE_BODY}}, @{$context->{$KEY_PAGE_BODY}} );
+		push( @{$self->{$KEY_HTTP_COOK}}, 
+			map { $_->clone() } @{$context->{$KEY_HTTP_COOK}} );
+
+		@{$self->{$KEY_PAGE_META}}{keys %{$context->{$KEY_PAGE_META}}} = 
+			values %{$context->{$KEY_PAGE_META}};
+		@{$self->{$KEY_PAGE_BATR}}{keys %{$context->{$KEY_PAGE_BATR}}} = 
+			values %{$context->{$KEY_PAGE_BATR}};
+		@{$self->{$KEY_HTTP_HEAD}}{keys %{$context->{$KEY_HTTP_HEAD}}} = 
+			values %{$context->{$KEY_HTTP_HEAD}};
+
+	} else {
+		$self->{$KEY_ERRORS} = [@{$self->{$KEY_ERRORS}}];
+		$self->{$KEY_PAGE_CSSR} = [@{$context->{$KEY_PAGE_CSSR}}];
+		$self->{$KEY_PAGE_CSSC} = [@{$context->{$KEY_PAGE_CSSC}}];
+		$self->{$KEY_PAGE_HEAD} = [@{$context->{$KEY_PAGE_HEAD}}];
+		$self->{$KEY_PAGE_BODY} = [@{$context->{$KEY_PAGE_BODY}}];
+		$self->{$KEY_HTTP_COOK} = 
+			[map { $_->clone() } @{$context->{$KEY_HTTP_COOK}}];
+
+		$self->{$KEY_PAGE_META} = {%{$context->{$KEY_PAGE_META}}};
+		$self->{$KEY_PAGE_BATR} = {%{$context->{$KEY_PAGE_BATR}}};
+		$self->{$KEY_HTTP_HEAD} = {%{$context->{$KEY_HTTP_HEAD}}};
+	}
 }
 
 ######################################################################
@@ -2393,6 +2480,38 @@ sub call_component {
 
 ######################################################################
 
+=head1 UTILITY_METHODS
+
+These methods handle miscellaneous functionality that may be useful.
+
+=head2 search_and_replace_page_body( DO_THIS )
+
+This method performs a customizable search-and-replace of this object's "page
+body" property.  The argument DO_THIS is a hash ref whose keys are tokens to look
+for and the corresponding values are what to replace the tokens with.  Tokens can
+be any Perl 5 regular expression and they are applied using
+"s/[find]/[replace]/g".  Perl will automatically throw an exception if your
+regular expressions don't compile, so you should check them for validity before
+use.  If DO_THIS is not a valid hash ref then this method returns without 
+changing anything.
+
+=cut
+
+######################################################################
+
+sub search_and_replace_page_body {
+	my ($self, $do_this) = @_;
+	ref( $do_this ) eq 'HASH' or return( undef );
+	my $page_body = join( '', @{$self->{$KEY_PAGE_BODY}} );
+	foreach my $find_val (keys %{$do_this}) {
+		my $replace_val = $do_this->{$find_val};
+		$page_body =~ s/$find_val/$replace_val/g;
+	}
+	$self->{$KEY_PAGE_BODY} = [$page_body];
+}
+
+######################################################################
+
 1;
 __END__
 
@@ -2415,6 +2534,7 @@ Address comments, suggestions, and bug reports to B<perl@DarrenDuncan.net>.
 
 perl(1), File::VirtualPath, HTML::EasyTags, Data::MultiValuedHash, 
 CGI::MultiValuedHash, HTML::FormTemplate, mod_perl, Apache, HTTP::Headers, 
-CGI::Cookie, CGI, CGI::Application, HTML::Template, HTML::Mason.
+CGI::Cookie, CGI, HTML::Mason, CGI::Application, CGI::Screen, 
+the duncand-prerelease distribution.
 
 =cut

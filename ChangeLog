@@ -1,3 +1,41 @@
+2001-04-23   Darren Duncan <perl@DarrenDuncan.net>
+
+	* Release 0.4.
+	
+	* This is the second release of HTML::Application as a distinct module.  
+	It follows more extensive usability testing which resulted in a few added 
+	features and bug fixes.  As a result of the new testing, this module is being 
+	moved to beta status from alpha.
+	
+	* Fixed SYNOPSIS POD in "Aardvark" module relating to the $inner context; some 
+	methods are now called following make_new_context() instead of before.
+	
+	* Fixed bug in private method _make_an_url(), which is used by 
+	url_as_string() and recall_url(), where query parameters were not being 
+	replicated when url_path_is_in_path_info() was true; now they are.
+	
+	* Fixed design flaw in make_new_context() where it had been calling 
+	initialize() to give default values to the new object before copying over the 
+	non default ones; now initialize() is not called and all object properties 
+	are either set or copied explicitely.  The flaw being fixed relates to 
+	unpleasantries when a subclass overrides the initialize() method.
+	
+	* Added new method take_context_output() which is designed to complement 
+	make_new_context().  This new method copies output values from the new 
+	context back to the parent object.
+	
+	* Added new utility method search_and_replace_page_body() which takes a hash 
+	of tokens (or regexps) to search for in the html page body and text to 
+	replace them with; this method implements search-and-replace functionality.
+
+	* This module has become 5K larger including documentation.
+
+	* Note: it is recommended to look at my duncand-prerelease-0.4 distribution 
+	since it contains about 8 modules that demonstrate HTML::Application in use.  
+	When these modules are reworked further they will be moved into this 
+	distribution under new names as "demos", probably in the 
+	HTML::Application::WS::* namespace.
+
 2001-04-20   Darren Duncan <perl@DarrenDuncan.net>
 
 	* Release 0.38.

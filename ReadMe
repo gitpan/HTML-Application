@@ -23,6 +23,12 @@ description of the module itself.
 This Read Me document concerns itself mainly with installation and support
 issues, and also includes any "To Do" lists.
 
+Please see my "duncand-prerelease" distribution for 10 other modules that are 
+designed to work with this one.  Eight of them are demo "application components", 
+one performs user input and output, and one encapsulates a file format for 
+counting events.  By looking at those you should have a better idea what 
+HTML::Application can do for you.
+
 KEEPING UP TO DATE
 
 My module set is constantly under development.  You should be able to find the

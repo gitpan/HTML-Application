@@ -8,7 +8,7 @@
 
 BEGIN { $| = 1; print "1..1\n"; }
 END {print "not ok 1\n" unless $loaded;}
-use HTML::Application 0.38;
+use HTML::Application 0.4;
 $loaded = 1;
 print "ok 1\n";
 use strict;
